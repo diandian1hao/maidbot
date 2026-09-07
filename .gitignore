@@ -29,3 +29,13 @@ backups/
 Thumbs.db
 .vscode/
 .idea/
+
+# === Auto-added cleanup ===
+models/
+*.bak*
+*.bak_*
+models/.lock/
+config.json
+.env
+*.db
+*.sqlite
