@@ -1,0 +1,8 @@
+{
+  "bot_name": "MaidBot",
+  "admin_user_id": "your_user_id_here",
+  "features": {
+    "vision_enabled": true,
+    "memory_enabled": true
+  }
+}
