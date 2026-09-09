@@ -1,5 +1,7 @@
 # 🤖 MaidBot
 
+![CI](https://github.com/diandian1hao/maidbot/actions/workflows/ci.yml/badge.svg)
+
 > 傲娇女仆系 QQ 机器人 × Web 双端智能体
 > 插件责任链 · 双库联动记忆 · 向量检索 · 云端 7×24 自持驻守 · 全链路可观测
 
