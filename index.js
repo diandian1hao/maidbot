@@ -9,6 +9,7 @@ const alert  = require('./core/alert');
 const metrics = require('./metrics');           // ⭐ 统一 metrics（根目录）
 const repo = require('./core/memoryRepository');
 const worker = require('./core/worker');
+const pipeline = require('./core/pipeline');    // 🆕 双端共享管道
 
 const pluginDir = process.env.PLUGIN_DIR || path.join(__dirname, 'plugins');
 
@@ -17,7 +18,60 @@ if (typeof MaidBot !== 'function') {
   process.exit(1);
 }
 
-// ====== 事件分发核心 ======
+// ====== 消息处理核心（QQ 端 / Web 端共用）======
+async function processMessage(userId, text, opts = {}) {
+  const source = opts.source || 'qq';
+  const msgData = {
+    sender_id: userId,
+    author: opts.author || { user_openid: userId, id: userId },
+    content: text,
+    id: opts.id || ('syn-' + source + '-' + Date.now()),
+    group_openid: opts.group_openid,
+    channel_id: opts.channel_id,
+    source,                                      // 🆕 'qq' | 'web'，插件可分端处理
+    raw: opts.raw || { source },
+  };
+
+  // 🔍 P3: 向量搜索（带用户隔离，异步不阻塞）
+  if (text && userId !== 'unknown') {
+    repo.search(userId, text, { topK: 3 }).then(results => {
+      if (results.length) {
+        logger.info(`[Pipeline] 向量搜索命中 ${results.length} 条 (user=${userId}, source=${source})`);
+      }
+    }).catch(() => {});
+  }
+
+  const sorted = [...pluginManager.plugins.values()]
+    .filter(p => typeof p.handleMessage === 'function')
+    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+
+  let reply = null;
+  let pluginName = null;
+  for (const plugin of sorted) {
+    try {
+      const r = await plugin.handleMessage(msgData, bot);
+      if (r) {
+        reply = String(r);
+        pluginName = plugin.name;
+        logger.info(`[Pipeline] 插件 ${plugin.name} 产出回复 (${reply.length} chars, source=${source})`);
+        break;
+      }
+    } catch (e) {
+      logger.error(`[Pipeline] 插件 ${plugin.name} 异常: ${e.message}`);
+    }
+  }
+
+  // 💾 P3: 将用户消息存入记忆（短期）
+  if (text && userId !== 'unknown') {
+    repo.save(userId, text, 'short').catch(e => {
+      logger.warn(`[Pipeline] 记忆写入失败: ${e.message}`);
+    });
+  }
+
+  return { reply, plugin: pluginName, msgData };
+}
+
+// ====== 事件分发核心（QQ 端）======
 async function dispatch(bot, t, d) {
   const MSG_EVENTS = ['C2C_MESSAGE_CREATE', 'GROUP_AT_MESSAGE_CREATE', 'AT_MESSAGE_CREATE'];
   if (!MSG_EVENTS.includes(t)) return;
@@ -30,50 +84,22 @@ async function dispatch(bot, t, d) {
 
   logger.info(`[Dispatch] 收到消息 type=${t} user=${userId} text="${text.slice(0, 30)}"`);
 
-  // 🔍 P3: 向量搜索（带用户隔离，异步不阻塞）
-  if (text && userId !== 'unknown') {
-    repo.search(userId, text, { topK: 3 }).then(results => {
-      if (results.length) {
-        logger.info(`[Dispatch] 向量搜索命中 ${results.length} 条 (user=${userId})`);
-      }
-    }).catch(() => {});
-  }
-
   if (!text && !(d.attachments && d.attachments.length)) return;
 
-  const sorted = [...pluginManager.plugins.values()]
-    .filter(p => typeof p.handleMessage === 'function')
-    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
-
-  let reply = null;
-  for (const plugin of sorted) {
-    try {
-      const msgData = {
-        sender_id: userId, author: d.author, content: text,
-        id: d.id, group_openid: d.group_openid, channel_id: d.channel_id, raw: d,
-      };
-      reply = await plugin.handleMessage(msgData, bot);
-      if (reply) {
-        logger.info(`[Dispatch] 插件 ${plugin.name} 产出回复 (${String(reply).length} chars)`);
-        break;
-      }
-    } catch (e) {
-      logger.error(`[Dispatch] 插件 ${plugin.name} 异常: ${e.message}`);
-    }
-  }
-
-  // 💾 P3: 将用户消息存入记忆（短期）
-  if (text && userId !== 'unknown') {
-    repo.save(userId, text, 'short').catch(e => {
-      logger.warn(`[Dispatch] 记忆写入失败: ${e.message}`);
-    });
-  }
+  const { reply } = await processMessage(userId, text, {
+    source: 'qq',
+    author: d.author,
+    id: d.id,
+    group_openid: d.group_openid,
+    channel_id: d.channel_id,
+    raw: d,
+  });
 
   if (!reply) return;
 
   try {
     if (t === 'C2C_MESSAGE_CREATE') {
-      await bot.api.replyC2C(d.author.user_openid, d.id, String(reply));
+      await bot.api.replyC2C(d.author.user_openid, d.id, reply);
     } else {
       logger.warn(`[Dispatch] ${t} 回复接口未实现`);
     }
@@ -94,6 +120,9 @@ const bot = new MaidBot({
 });
 
 const pluginManager = new PluginManager(bot);
+
+// 🆕 注册共享管道：web 端（及未来任意端）复用同一条插件责任链
+pipeline.register((userId, text, opts) => processMessage(userId, text, opts));
 
 // ====== P0: 优雅退出 ======
 let shuttingDown = false;
@@ -188,7 +217,7 @@ async function start() {
     repo.reportMetrics();
 
     try { alert.alertInfo('MaidBot 已启动, plugins=' + count); } catch(_){}
-    logger.info('[P0+P3] ✅ 所有基础保障 + 双库联动已就绪');
+    logger.info('[P0+P3] ✅ 所有基础保障 + 双库联动 + 共享管道已就绪');
   } catch (error) {
     logger.error('❌ Startup failed: ' + error.message);
     process.exit(1);

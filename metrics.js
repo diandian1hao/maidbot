@@ -116,6 +116,31 @@ const vectorServiceUp = new client.Gauge({
     registers: [register]
 });
 
+// ====== 启动时零值初始化 ======
+// Counter: 用 inc(0) 初始化，确保 rate() 能返回 0 而非空
+// Histogram: 不做零值初始化（observe(0) 会导致 histogram_quantile 返回 NaN）
+//            等真实数据到来后自动激活
+
+// Counter 初始化
+messagesTotal.inc({ type: 'C2C' }, 0);
+messagesTotal.inc({ type: 'GROUP' }, 0);
+
+errorsTotal.inc({ plugin: 'init', error_type: 'none' }, 0);
+
+tokensTotal.inc({ model: 'init', direction: 'input' }, 0);
+tokensTotal.inc({ model: 'init', direction: 'output' }, 0);
+
+searchTotal.inc({ status: 'ok' }, 0);
+searchTotal.inc({ status: 'error' }, 0);
+
+memoryWriteTotal.inc({ type: 'short', status: 'ok' }, 0);
+memoryWriteTotal.inc({ type: 'long', status: 'ok' }, 0);
+
+// Gauge 初始值
+activeUsers.set(0);
+syncPending.set(0);
+vectorServiceUp.set(0);
+
 // ===== 对外暴露的便捷方法 =====
 module.exports = {
     register,

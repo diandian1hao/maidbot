@@ -52,3 +52,4 @@ archive/
 node_modules/
 *.bak*
 *.bak_*
+*_backup.js
