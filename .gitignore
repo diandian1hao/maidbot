@@ -39,3 +39,16 @@ config.json
 .env
 *.db
 *.sqlite
+.env
+.env.*
+config.json
+.owner.json
+*.db
+*.db-shm
+*.db-wal
+logs/
+backups/
+archive/
+node_modules/
+*.bak*
+*.bak_*
