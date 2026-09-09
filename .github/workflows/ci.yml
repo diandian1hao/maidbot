@@ -9,9 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
+      # 修复点：显式指定 lts/* 并开启 check-latest
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 'lts/*'
+          check-latest: true
           cache: npm
+          
       - run: npm ci
       - run: npm test
