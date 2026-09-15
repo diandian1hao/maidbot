@@ -3,7 +3,8 @@ const express = require('express');
 const repo = require('../core/memoryRepository');
 const llm = require('../llm');
 const logger = require('../utils/logger');
-const pipeline = require('../core/pipeline');   // 🆕 复用主控插件责任链
+const pipeline = require('../core/pipeline');
+const metrics = require('../metrics');   // 🆕 复用主控插件责任链
 
 // ====== 应用层流控：个人 10 次/天 + 全站 100 次/天 ======
 const rateLimitMap = new Map();
@@ -221,6 +222,9 @@ class WebServerPlugin {
       res.setHeader('Access-Control-Allow-Origin', '*');
       const write = (text) => res.write(`data: ${JSON.stringify({ text })}\n\n`);
       const userId = 'web_' + String(ip).replace(/[^a-zA-Z0-9]/g, '_');
+      metrics.msg('C2C');
+      metrics.users(rateLimitMap.size);
+      const reqStart = Date.now();
       try {
         let reply = null;
         let pluginName = null;
@@ -231,6 +235,13 @@ class WebServerPlugin {
         } else {
           const memories = await repo.search(userId, String(message), { topK: 3 }).catch(() => []);
           reply = await llm.chat(String(message), memories);
+          }
+          // 📊 埋点: 检索+延迟+token
+          metrics.searchTotal.inc({ status: 'ok' });
+          metrics.latency('main', 'ok', (Date.now() - reqStart) / 1000);
+          metrics.token('main', 'input', Math.ceil(String(message).length / 2));
+          metrics.token('main', 'output', Math.ceil((reply ? String(reply).length : 0) / 2));
+          if (false) {
         }
         if (!reply) {
           write('（没有插件或模型响应）');

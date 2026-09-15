@@ -1,55 +1,21 @@
-# === 敏感信息（绝对禁止上传）===
-.env
-.env.*
-config.json
-.owner.json
-
-# === 数据库文件（体积大且含隐私）===
-*.db
-*.db-shm
-*.db-wal
-
-# === 依赖与运行时日志 ===
 node_modules/
 logs/
-*.log
-
-# === 备份、临时文件与归档目录 ===
-archive/
-*.bak
-*.bak.*
-*.clean.bak
-*.dump.*
-backup_*/
 backups/
-12.0.2
-
-# === 系统/编辑器生成 ===
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# === Auto-added cleanup ===
+archive/
 models/
-*.bak*
-*.bak_*
-models/.lock/
-config.json
-.env
-*.db
-*.sqlite
 .env
 .env.*
-config.json
+!.env.example
 .owner.json
+config.json
 *.db
 *.db-shm
 *.db-wal
-logs/
-backups/
-archive/
-node_modules/
+*.log
 *.bak*
-*.bak_*
-*_backup.js
+gateway_backup.js
+check_db.js
+verify_p1.js
+test-vision.js
+npm-debug.log*
+.DS_Store
