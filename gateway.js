@@ -28,8 +28,8 @@ const OpenAI = require('openai');
 })();
 
 /* ---------------- 配置 ---------------- */
-const APP_ID = process.env.APP_ID || '';
-const CLIENT_SECRET = process.env.CLIENT_SECRET || process.env.APP_SECRET || '';
+const APP_ID = process.env.FEISHU_APP_ID || '';
+const CLIENT_SECRET = process.env.CLIENT_SECRET || process.env.FEISHU_APP_SECRET || '';
 const AI_API_KEY = process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || process.env.MODEL_API_KEY || '';
 const AI_BASE_URL = process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.deepseek.com/v1';
 const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
