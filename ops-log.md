@@ -42,3 +42,30 @@
 
 ### 涉及文件备份
 - core/api.js.bak.* / core/bot.js.bak.* / core/alert.js.bak.* / index.js.bak.* （同目录，带时间戳）
+
+## W1 正式关闭（2026-10-19）
+
+### 提交记录
+
+- 6adaac9 feat(W1): ModelProvider 多模型路由层
+- 4b7007d chore(core): core 模块改动 + chatWorker/feishuAdapter
+- 2f8db96 chore: index/gateway/aiBrain 改动
+- f94df14 chore(deps): 依赖清单
+- 已 push: 064dd76..f94df14
+
+### 验收结论
+
+测试 1/2/3/4 全过 + QQ 回归正常 + aiBrain 零改动 + .env 安全 + 代码入库。
+
+### 遗留隐患（W4 前处理）
+
+- GLM review_code 长输出 latency 13.9s → devPipeline 审查 timeout=10s 兜底
+- 单次聊天 tokens≈1666 → W7 加每日 token 预算
+- Redis 6.0.16 < BullMQ 推荐 6.2.0（非本次引入）
+
+### 经验教训
+
+- .env 一直安全，上次丢失非 git 泄露，疑为 git clean -fd
+- 禁用：git add . / git clean -fd / git push --force
+- heredoc 结束标记用独特词（MDEOF / ENVEOF / LOGEOF），不用 EOF
+
