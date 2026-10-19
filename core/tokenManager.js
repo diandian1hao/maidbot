@@ -1,8 +1,9 @@
 const axios = require('axios');
 
 // --- 【核心修复】增加了 .trim() 和备选变量名，防止空格和命名错误 ---
-const APP_ID = (process.env.APP_ID || '').trim();
-const CLIENT_SECRET = (process.env.CLIENT_SECRET || process.env.APP_SECRET || '').trim();
+// 🆕 根据平台自动选择凭证（QQ 优先用 QQ_APP_ID，否则回退到飞书）
+const APP_ID = (process.env.QQ_APP_ID || process.env.FEISHU_APP_ID || process.env.APP_ID || '').trim();
+const CLIENT_SECRET = (process.env.QQ_APP_SECRET || process.env.CLIENT_SECRET || process.env.FEISHU_APP_SECRET || '').trim();
 
 let token = '';
 let tokenExpiresAt = 0;
@@ -49,7 +50,7 @@ async function getToken(force = false) {
 
         token = res.data.access_token;
         // 设置过期时间（提前 60 秒刷新，保平安）
-        tokenExpiresAt = Date.now() + (res.data.expire_in - 60) * 1000;
+        tokenExpiresAt = Date.now() + (res.data.expires_in - 60) * 1000;
         
         console.log('✅ Token 获取成功！有效期到:', new Date(tokenExpiresAt).toLocaleTimeString());
         return token;

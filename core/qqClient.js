@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const axios = require('axios');
 const { getToken } = require('./tokenManager');
+let _token = ''; // 🆕 模块级 token，供 onMessage 等回调使用
 
 const APP_ID = process.env.APP_ID || '';
 const API_BASE = 'https://api.sgroup.qq.com';
@@ -55,9 +56,9 @@ function cleanText(content) {
 
 async function connect(messageHandler) {
     try {
-        const token = await getToken();
+        _token = await getToken();
         const res = await axios.get(`${API_BASE}/gateway`, { 
-            headers: { Authorization: `QQBot ${token}`, 'Content-Type': 'application/json' } 
+            headers: { Authorization: `QQBot ${_token}`, 'Content-Type': 'application/json' } 
         });
         console.log('🔗 连接网关:', res.data.url);
         ws = new WebSocket(res.data.url);
@@ -87,10 +88,10 @@ function onMessage(msg, messageHandler) {
         case 10: {
             startHeartbeat(d.heartbeat_interval || 45000);
             if (sessionId && lastSeq !== null) {
-                ws.send(JSON.stringify({ op: 6, d: { token: `QQBot ${token}`, sessionId, seq: lastSeq } }));
+                ws.send(JSON.stringify({ op: 6, d: { token: `QQBot ${_token}`, sessionId, seq: lastSeq } }));
             } else {
                 console.log('🆔 发送 IDENTIFY...');
-                ws.send(JSON.stringify({ op: 2, d: { token: `QQBot ${token}`, intents: INTENTS, shard: [0, 1], properties: {} } }));
+                ws.send(JSON.stringify({ op: 2, d: { token: `QQBot ${_token}`, intents: INTENTS, shard: [0, 1], properties: {} } }));
             }
             break;
         }
@@ -110,7 +111,7 @@ function onMessage(msg, messageHandler) {
         case 9: 
             sessionId = null; lastSeq = null;
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ op: 2, d: { token: `QQBot ${token}`, intents: INTENTS, shard: [0, 1], properties: {} } }));
+                ws.send(JSON.stringify({ op: 2, d: { token: `QQBot ${_token}`, intents: INTENTS, shard: [0, 1], properties: {} } }));
             }
             break;
     }

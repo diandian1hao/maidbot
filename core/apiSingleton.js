@@ -4,8 +4,8 @@ const ApiClient = require('./api');
 let instance = null;
 function get() {
   if (!instance) {
-    const appId = process.env.APP_ID;
-    const appSecret = process.env.APP_SECRET;
+    const appId = process.env.FEISHU_APP_ID;
+    const appSecret = process.env.FEISHU_APP_SECRET;
     if (!appId || !appSecret) throw new Error('[apiSingleton] 缺少 APP_ID / APP_SECRET');
     instance = new ApiClient(appId, appSecret);
   }
