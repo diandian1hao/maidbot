@@ -1,25 +1,19 @@
-// llm.js - 傲娇女仆的大脑（prompt 外置 + 可热重载 + 记忆注入）
-const axios = require('axios');
+// llm.js - 傲娇女仆的大脑（人格管理 + 记忆注入 + 委托 ModelProvider）
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 const logger = require('./utils/logger');
+const modelProvider = require('./core/modelProvider');
 
-const API_KEY    = process.env.DEEPSEEK_API_KEY;
-const BASE_URL   = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
-const MODEL      = process.env.LLM_MODEL || 'deepseek-chat';
 const PROMPT_FILE = path.join(__dirname, 'prompts', 'maid.txt');
 
-// ========== 人格管理 ==========
+// ========== 人格管理（原样保留）==========
 let currentPersona = { name: 'maid', systemPrompt: '' };
 
 function loadPersona(filePath = PROMPT_FILE) {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
-    currentPersona = {
-      name: path.basename(filePath, '.txt'),
-      systemPrompt: raw,
-    };
+    currentPersona = { name: path.basename(filePath, '.txt'), systemPrompt: raw };
     logger.info(`[LLM] 人格已加载: ${currentPersona.name} (${raw.length} chars)`);
   } catch (e) {
     logger.error(`[LLM] 读取人格文件失败: ${e.message} -> 使用内置默认`);
@@ -27,50 +21,14 @@ function loadPersona(filePath = PROMPT_FILE) {
   }
 }
 
-function switchPersona(filePath) {
-  loadPersona(filePath);
-  return currentPersona.name;
-}
+function switchPersona(filePath) { loadPersona(filePath); return currentPersona.name; }
+function getCurrentPersona() { return currentPersona; }
 
-function getCurrentPersona() {
-  return currentPersona;
-}
-
-// 启动时加载一次
 loadPersona();
 
-// ========== P0: 带指数退避重试的 axios 封装 ==========
-async function postWithRetry(payload, opts = {}, maxRetries = 3) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await axios.post(`${BASE_URL}/v1/chat/completions`, payload, {
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-        ...opts,
-      });
-    } catch (err) {
-      const status = err.response?.status;
-      // 4xx(除429)是参数/鉴权错误，重试无意义；5xx/429/网络错误才重试
-      const isRetryable = !status || status >= 500 || status === 429;
-      if (!isRetryable || attempt === maxRetries) throw err;
-      const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
-      logger.warn(`[LLM] 请求失败(status=${status || err.message})，${delay}ms 后第${attempt + 1}次重试...`);
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-}
-
-// ========== 聊天主函数 ==========
+// ========== 聊天主函数（委托 ModelProvider，对外行为不变）==========
 async function chat(userMsg, options = {}) {
   const { history = [], summary = '', time = '' } = options;
-
-  if (!API_KEY) {
-    logger.error('[LLM] 缺少 DEEPSEEK_API_KEY，请检查 .env');
-    return '主人，我的脑子空空的...（API Key 缺失）';
-  }
 
   let sysContent = currentPersona.systemPrompt;
   if (summary) sysContent += `\n\n【你对这位主人的长期记忆】\n${summary}`;
@@ -84,25 +42,20 @@ async function chat(userMsg, options = {}) {
 
   try {
     logger.info(`[LLM] 思考中: "${String(userMsg).substring(0, 20)}..."`);
-    const res = await postWithRetry({
-      model: MODEL,
-      messages,
+    const r = await modelProvider.route('chat', messages, {
       temperature: 0.8,
-      max_tokens: 500,
+      maxTokens: 500,
     });
-    const reply = res.data.choices[0].message.content;
-    logger.info(`[LLM] 回复生成成功 (${reply.length} chars)`);
-    return reply;
+    logger.info(`[LLM] 回复生成成功 (${r.content.length} chars, provider=${r.provider}, ${r.latency}ms)`);
+    return r.content;
   } catch (err) {
-    logger.error(`[LLM] DeepSeek 调用失败(已耗尽重试): ${JSON.stringify(err.response?.data) || err.message}`);
-    return '呜...DeepSeek 那个家伙不理我，请稍后再试。（API 调用失败）';
+    logger.error(`[LLM] 所有 provider 调用失败: ${err.message}`);
+    return '呜...脑子转不动了，请稍后再试。（AI 服务暂时不可用）';
   }
 }
 
-// ========== 滚动总结 ==========
+// ========== 滚动总结（委托 ModelProvider，走 distill 路由到免费模型）==========
 async function summarize(evictedMessages, previousSummary = '') {
-  if (!API_KEY) return previousSummary;
-
   const evictedText = evictedMessages
     .map(m => `${m.role === 'user' ? '主人' : '女仆'}: ${m.content}`)
     .join('\n');
@@ -115,15 +68,13 @@ ${evictedText}
 请输出更新后的长期记忆摘要：`;
 
   try {
-    const res = await postWithRetry({
-      model: MODEL,
-      messages: [{ role: 'user', content: prompt }],
+    const r = await modelProvider.route('distill', prompt, {
       temperature: 0.3,
-      max_tokens: 200,
-    }, {}, 2); // 总结失败不那么致命，重试2次即可
-    return res.data.choices[0].message.content.trim();
+      maxTokens: 200,
+    });
+    return r.content.trim();
   } catch (e) {
-    logger.error(`[LLM] 总结失败(已耗尽重试): ${e.message}`);
+    logger.error(`[LLM] 总结失败: ${e.message}`);
     return previousSummary;
   }
 }
