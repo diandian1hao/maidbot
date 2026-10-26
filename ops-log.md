@@ -43,6 +43,7 @@
 ### 涉及文件备份
 - core/api.js.bak.* / core/bot.js.bak.* / core/alert.js.bak.* / index.js.bak.* （同目录，带时间戳）
 
+
 ## W1 正式关闭（2026-10-19）
 
 ### 提交记录
@@ -51,24 +52,75 @@
 - 4b7007d chore(core): core 模块改动 + chatWorker/feishuAdapter
 - 2f8db96 chore: index/gateway/aiBrain 改动
 - f94df14 chore(deps): 依赖清单
-- 已 push: 064dd76..f94df14
+- 7f5e2e9 docs(W1): 补全 .env.example + model-provider 文档 + W1 复盘
+- 已 push: 064dd76..7f5e2e9
 
 ### 验收结论
 
 测试 1/2/3/4 全过 + QQ 回归正常 + aiBrain 零改动 + .env 安全 + 代码入库。
 
-### 遗留隐患（需本周处理）
+### 遗留隐患（W4 前处理）
 
-1. **backup_db.js 已修复**（本轮扩展，commit 094ba8d）
-   - maid_memory.db 和 dev_knowledge.db 已纳入 6h 定时备份
-   - 三库备份验证通过，备份文件可读
+- GLM review_code 长输出 latency 13.9s → devPipeline 审查 timeout=10s 兜底
+- 单次聊天 tokens≈1666 → W7 加每日 token 预算
+- Redis 6.0.16 < BullMQ 推荐 6.2.0（非本次引入）
 
-2. **L1 层未开始**
+### 经验教训
+
+- .env 一直安全，上次丢失非 git 泄露，疑为 git clean -fd
+- 禁用：git add . / git clean -fd / git push --force
+- heredoc 结束标记用独特词（MDEOF / ENVEOF / LOGEOF），不用 EOF
+
+## W2 周一（2026-10-26）：dev_knowledge.db 建表 + L0 层
+
+### 完成事项
+
+1. 建表：scripts/init-dev-knowledge.js 创建三表七索引
+   - dev_events（L0，12 字段）
+   - dev_experience（L1，13 字段 + 外键 ON DELETE SET NULL）
+   - dev_patterns（L2，6 字段，仅建表不启用）
+   - WAL + foreign_keys 启用
+
+2. 表结构验证：12+13+6 字段全部匹配，外键 dev_experience.source_event_id -> dev_events.id 正确
+
+3. L0 层实现：core/devMemory.js 暴露 9 个方法
+   - writeEvent / getUndistilled / markDistilled / markUnstructured
+   - updateEventOutcome / adoptEvent / getEventById
+   - stats / selfCheck
+   - 风格对齐 memory.js（better-sqlite3 同步 + 预编译语句 + 事务）
+
+4. L0 测试全绿：scripts/test-dev-memory-l0.js 5 项测试全过，测试数据自动清理
+
+5. 三库备份扩展：scripts/backup_db.js 支持 chat_memory / maid_memory / dev_knowledge
+   - 每个库保留最近 7 份
+   - 备份文件可读验证通过
+
+### 提交记录
+
+- 1548c37 feat(W2): 新增 dev_knowledge.db 初始化脚本（三表七索引 + 自检）
+- d54b9ca feat(W2): devMemory L0 层（writeEvent/getUndistilled/markDistilled/markUnstructured）
+- 094ba8d feat(backup): 扩展 backup_db.js 支持 maid_memory + dev_knowledge 多库备份
+- 329b076 docs(W2): 修复 ops-log 尾部重复节和粘贴脏行
+
+### 关键发现
+
+p3-vector 原生支持 memory_type 过滤，开发知识库的向量隔离不需要改 p3-vector 一行代码：
+- user_id = 'dev_me'
+- memory_type = 'dev_experience'
+- point_id = 'dev_exp_<id>'（必须加前缀，避免与 chat_memory 整数 id 撞车）
+
+W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
+
+### 遗留隐患
+
+1. backup_db.js 已修复（commit 094ba8d），三库备份闭环
+
+2. L1 层未开始
    - 周二写 writeExperience / searchExperience / updateEmbeddingStatus
    - 周三晚 50% 检查点，未达标砍 adoptExperience 权重逻辑
 
 ### 明日计划（10/27 周二）
 
-- 上午：L1 三方法追加到 devMemory.js
+- 上午：L1 五方法追加到 devMemory.js
 - 下午：scripts/test-dev-memory-l1.js（含外键 ON DELETE SET NULL 验证）
 - 晚上：commit + push
