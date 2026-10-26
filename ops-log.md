@@ -57,67 +57,11 @@
 
 测试 1/2/3/4 全过 + QQ 回归正常 + aiBrain 零改动 + .env 安全 + 代码入库。
 
-### 遗留隐患（W4 前处理）
-
-- GLM review_code 长输出 latency 13.9s → devPipeline 审查 timeout=10s 兜底
-- 单次聊天 tokens≈1666 → W7 加每日 token 预算
-- Redis 6.0.16 < BullMQ 推荐 6.2.0（非本次引入）
-
-### 经验教训
-
-- .env 一直安全，上次丢失非 git 泄露，疑为 git clean -fd
-- 禁用：git add . / git clean -fd / git push --force
-- heredoc 结束标记用独特词（MDEOF / ENVEOF / LOGEOF），不用 EOF
-
-
-## W2 周一（2026-10-26）：dev_knowledge.db 建表 + L0 层
-
-### 完成事项
-
-1. **建表**：`scripts/init-dev-knowledge.js` 创建三表七索引
-   - dev_events（L0，12 字段）
-   - dev_experience（L1，13 字段 + 外键 ON DELETE SET NULL）
-   - dev_patterns（L2，6 字段，仅建表不启用）
-   - 索引：idx_events_distilled / idx_events_ts / idx_events_task / idx_exp_task / idx_exp_vector / idx_exp_embedding / idx_exp_adopted
-   - WAL + foreign_keys 启用
-
-2. **表结构验证**：12+13+6 字段全部匹配，外键 `dev_experience.source_event_id → dev_events.id` 正确
-
-3. **隔离确认**：`.gitignore` 的 `*.db` 规则挡住 `dev_knowledge.db`，`git status` 无追踪
-
-4. **L0 层实现**：`core/devMemory.js` 暴露 9 个方法
-   - writeEvent / getUndistilled / markDistilled / markUnstructured
-   - updateEventOutcome / adoptEvent / getEventById
-   - stats / selfCheck
-   - 风格对齐 `memory.js`（better-sqlite3 同步 + 预编译语句 + 事务）
-
-5. **L0 测试全绿**：`scripts/test-dev-memory-l0.js` 5 项测试
-   - writeEvent 返回有效 id ✅
-   - getUndistilled 能读到并反序列化 files_touched ✅
-   - markDistilled 后从待蒸馏列表移除 ✅
-   - markUnstructured 设置 distilled=-1 / unstructured=1 ✅
-   - updateEventOutcome + adoptEvent 生效 ✅
-   - 测试数据自动清理，stats 归零 ✅
-
-### 提交记录
-
-- d54b9ca feat(W2): devMemory L0 层
-- 待补：init-dev-knowledge.js（本轮补提交）
-
-### 关键发现（影响 W2 周四方案）
-
-**p3-vector 原生支持 memory_type 过滤**（`memoryRepository.search` 的请求体已带 `memory_type`），开发知识库的向量隔离**不需要改 p3-vector 一行代码**，只需约定：
-- user_id = 'dev_me'
-- memory_type = 'dev_experience'
-- point_id = 'dev_exp_<id>'（必须加前缀，避免与 chat_memory 整数 id 撞车）
-
-W2 周四只需写 `syncExperienceToVector(id)` 调 `/ingest`。
-
 ### 遗留隐患（需本周处理）
 
-1. **backup_db.js 只备份 chat_memory.db**
-   - `maid_memory.db` 和 `dev_knowledge.db` 均未纳入 6h 定时备份
-   - W2 内需扩展 backup_db.js
+1. **backup_db.js 已修复**（本轮扩展，commit 094ba8d）
+   - maid_memory.db 和 dev_knowledge.db 已纳入 6h 定时备份
+   - 三库备份验证通过，备份文件可读
 
 2. **L1 层未开始**
    - 周二写 writeExperience / searchExperience / updateEmbeddingStatus
