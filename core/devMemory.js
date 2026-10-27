@@ -1,5 +1,4 @@
-// core/devMemory.js —— 开发知识库（L0 原始事件 + L1 结构化经验）
-// 独立连接 dev_knowledge.db，与 chat_memory.db / maid_memory.db 零耦合
+// core/devMemory.js —— 开发知识库（L0 + L1 + 搜索埋点）
 const Database = require('better-sqlite3');
 const path = require('path');
 const logger = require('../utils/logger');
@@ -49,6 +48,20 @@ db.exec(`
     confidence REAL DEFAULT 0.0,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   );
+  CREATE TABLE IF NOT EXISTS dev_search_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    query TEXT NOT NULL,
+    query_norm TEXT,
+    top_k INTEGER DEFAULT 3,
+    hit_count INTEGER DEFAULT 0,
+    hit_ids TEXT,
+    top_score REAL,
+    adopted_hit INTEGER DEFAULT 0,
+    source TEXT DEFAULT 'dev',
+    latency_ms INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  );
   CREATE INDEX IF NOT EXISTS idx_events_distilled ON dev_events(distilled, ts);
   CREATE INDEX IF NOT EXISTS idx_events_ts ON dev_events(ts DESC);
   CREATE INDEX IF NOT EXISTS idx_events_task ON dev_events(task_type);
@@ -56,11 +69,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_exp_vector ON dev_experience(vector_id);
   CREATE INDEX IF NOT EXISTS idx_exp_embedding ON dev_experience(embedding_status);
   CREATE INDEX IF NOT EXISTS idx_exp_adopted ON dev_experience(adopted, ts DESC);
+  CREATE INDEX IF NOT EXISTS idx_search_ts ON dev_search_log(ts DESC);
+  CREATE INDEX IF NOT EXISTS idx_search_query ON dev_search_log(query_norm);
+  CREATE INDEX IF NOT EXISTS idx_search_hit ON dev_search_log(hit_count);
 `);
 
-// ===== 预编译语句 =====
 const stmt = {
-  // L0
+  // ===== L0 =====
   insertEvent: db.prepare(
     'INSERT INTO dev_events (ts, source, task_type, raw_input, raw_output, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ),
@@ -75,8 +90,7 @@ const stmt = {
   countEvents: db.prepare('SELECT COUNT(*) AS c FROM dev_events'),
   countDistilled: db.prepare('SELECT COUNT(*) AS c FROM dev_events WHERE distilled = 1'),
   countUnstructured: db.prepare('SELECT COUNT(*) AS c FROM dev_events WHERE unstructured = 1'),
-
-  // L1
+  // ===== L1 =====
   insertExperience: db.prepare(
     'INSERT INTO dev_experience (ts, source_event_id, task_type, problem, solution, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ),
@@ -89,16 +103,19 @@ const stmt = {
   countEmbeddingPending: db.prepare(
     "SELECT COUNT(*) AS c FROM dev_experience WHERE embedding_status = 'pending'"
   ),
-  // searchExperience 的 fallback SQL（周四换向量后保留为兜底）
   searchFallbackNoType: db.prepare(
     'SELECT * FROM dev_experience WHERE reusable = 1 ORDER BY adopted DESC, ts DESC LIMIT ?'
   ),
   searchFallbackWithType: db.prepare(
     'SELECT * FROM dev_experience WHERE reusable = 1 AND task_type = ? ORDER BY adopted DESC, ts DESC LIMIT ?'
   ),
+  // ===== 埋点 =====
+  insertSearchLog: db.prepare(
+    'INSERT INTO dev_search_log (ts, query, query_norm, top_k, hit_count, hit_ids, top_score, adopted_hit, source, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ),
+  countSearchLog: db.prepare('SELECT COUNT(*) AS c FROM dev_search_log'),
 };
 
-// ===== 事务 =====
 const txMarkDistilled = db.transaction((ids) => {
   for (const id of ids) stmt.markDistilled.run(id);
 });
@@ -106,7 +123,6 @@ const txMarkUnstructured = db.transaction((ids) => {
   for (const id of ids) stmt.markUnstructured.run(id);
 });
 
-// ===== 行反序列化 =====
 function rowToEvent(r) {
   if (!r) return null;
   return { ...r, files_touched: r.files_touched ? JSON.parse(r.files_touched) : [] };
@@ -116,8 +132,13 @@ function rowToExperience(r) {
   return { ...r, files_touched: r.files_touched ? JSON.parse(r.files_touched) : [] };
 }
 
-// ==================== L0 ====================
+// 归一化 query：小写 + 去标点 + 保留中英文字符
+function normalizeQuery(q) {
+  if (!q) return '';
+  return String(q).toLowerCase().replace(/[^\w\u4e00-\u9fa5]+/g, ' ').trim();
+}
 
+// ==================== L0 ====================
 function writeEvent(ev) {
   ev = ev || {};
   const source = ev.source || 'manual';
@@ -126,11 +147,8 @@ function writeEvent(ev) {
   const rawOutput = ev.rawOutput || null;
   const filesTouched = ev.filesTouched || [];
   const outcome = ev.outcome || 'pending';
-
   const filesJson = Array.isArray(filesTouched) && filesTouched.length
-    ? JSON.stringify(filesTouched)
-    : null;
-
+    ? JSON.stringify(filesTouched) : null;
   const info = stmt.insertEvent.run(Date.now(), source, taskType, rawInput, rawOutput, filesJson, outcome);
   logger.info(`[DevMemory] L0 写入 id=${info.lastInsertRowid} source=${source} task=${taskType || '-'}`);
   return { id: info.lastInsertRowid };
@@ -138,8 +156,7 @@ function writeEvent(ev) {
 
 function getUndistilled(limit) {
   limit = limit || 20;
-  const rows = stmt.getUndistilled.all(limit);
-  return rows.map(rowToEvent);
+  return stmt.getUndistilled.all(limit).map(rowToEvent);
 }
 
 function markDistilled(ids) {
@@ -168,24 +185,12 @@ function getEventById(id) {
 }
 
 // ==================== L1 ====================
-
-/**
- * 写入 L1 结构化经验
- * @param {object} exp
- * @param {number} [exp.sourceEventId]  关联的 L0 id
- * @param {string} exp.taskType
- * @param {string} exp.problem
- * @param {string} exp.solution
- * @param {string[]} [exp.filesTouched]
- * @param {string} [exp.outcome='success']
- */
 function writeExperience(exp) {
   if (!exp || !exp.taskType || !exp.problem || !exp.solution) {
     throw new Error('[DevMemory] writeExperience 缺少必填字段 taskType/problem/solution');
   }
   const filesJson = Array.isArray(exp.filesTouched) && exp.filesTouched.length
-    ? JSON.stringify(exp.filesTouched)
-    : null;
+    ? JSON.stringify(exp.filesTouched) : null;
   const info = stmt.insertExperience.run(
     Date.now(),
     exp.sourceEventId || null,
@@ -214,29 +219,45 @@ function adoptExperience(id) {
 }
 
 /**
- * 语义检索 —— 明天先用 SQLite fallback，周四换成 p3-vector
- * @param {string} query
- * @param {object} [opts]
- * @param {number} [opts.topK=3]
- * @param {string} [opts.taskType=null]
- * @returns {Array<object>}
+ * 检索 L1（当前 SQLite fallback，周四换 p3-vector）
+ * 带埋点：每次检索都写 dev_search_log，失败不阻塞
  */
 function searchExperience(query, opts) {
   opts = opts || {};
   const topK = opts.topK || 3;
   const taskType = opts.taskType || null;
+  const source = opts.source || 'dev';
+  const t0 = Date.now();
 
   // TODO(W2 周四): 替换为 p3-vector /search 调用
-  //   约定: user_id='dev_me', memory_type='dev_experience', point_id='dev_exp_<id>'
-  // fallback: 按 task_type 过滤 + adopted/ts 排序
   const rows = taskType
     ? stmt.searchFallbackWithType.all(taskType, topK)
     : stmt.searchFallbackNoType.all(topK);
-  return rows.map(rowToExperience);
+  const hits = rows.map(rowToExperience);
+  const latency = Date.now() - t0;
+
+  // ===== 埋点（不阻塞）=====
+  try {
+    stmt.insertSearchLog.run(
+      Date.now(),
+      String(query || ''),
+      normalizeQuery(query),
+      topK,
+      hits.length,
+      JSON.stringify(hits.map(h => h.id)),
+      null, // top_score 待周四接入向量后填充
+      hits.some(h => h.adopted === 1) ? 1 : 0,
+      source,
+      latency
+    );
+  } catch (e) {
+    logger.warn(`[DevMemory] search 埋点失败: ${e.message}`);
+  }
+
+  return hits;
 }
 
 // ==================== 统计 / 自检 ====================
-
 function stats() {
   return {
     events: stmt.countEvents.get().c,
@@ -244,6 +265,7 @@ function stats() {
     unstructured: stmt.countUnstructured.get().c,
     experience: stmt.countExperience.get().c,
     embedding_pending: stmt.countEmbeddingPending.get().c,
+    search_log: stmt.countSearchLog.get().c,
   };
 }
 
@@ -261,24 +283,9 @@ function selfCheck() {
 }
 
 module.exports = {
-  // L0
-  writeEvent,
-  getUndistilled,
-  markDistilled,
-  markUnstructured,
-  updateEventOutcome,
-  adoptEvent,
-  getEventById,
-  // L1
-  writeExperience,
-  getExperienceById,
-  updateEmbeddingStatus,
-  adoptExperience,
-  searchExperience,
-  // 统计
-  stats,
-  selfCheck,
-  // 调试
-  _raw: db,
-  _stmt: stmt,
+  writeEvent, getUndistilled, markDistilled, markUnstructured,
+  updateEventOutcome, adoptEvent, getEventById,
+  writeExperience, getExperienceById, updateEmbeddingStatus, adoptExperience, searchExperience,
+  stats, selfCheck,
+  _raw: db, _stmt: stmt,
 };

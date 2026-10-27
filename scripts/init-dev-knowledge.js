@@ -47,6 +47,21 @@ CREATE TABLE IF NOT EXISTS dev_patterns (
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS dev_search_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  query TEXT NOT NULL,
+  query_norm TEXT,
+  top_k INTEGER DEFAULT 3,
+  hit_count INTEGER DEFAULT 0,
+  hit_ids TEXT,
+  top_score REAL,
+  adopted_hit INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'dev',
+  latency_ms INTEGER,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_distilled ON dev_events(distilled, ts);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON dev_events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_events_task ON dev_events(task_type);
@@ -54,6 +69,9 @@ CREATE INDEX IF NOT EXISTS idx_exp_task ON dev_experience(task_type, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_exp_vector ON dev_experience(vector_id);
 CREATE INDEX IF NOT EXISTS idx_exp_embedding ON dev_experience(embedding_status);
 CREATE INDEX IF NOT EXISTS idx_exp_adopted ON dev_experience(adopted, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_search_ts ON dev_search_log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_search_query ON dev_search_log(query_norm);
+CREATE INDEX IF NOT EXISTS idx_search_hit ON dev_search_log(hit_count);
 `;
 
 function main() {
