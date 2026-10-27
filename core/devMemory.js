@@ -1,4 +1,5 @@
 // core/devMemory.js —— 开发知识库（L0 原始事件 + L1 结构化经验）
+// 独立连接 dev_knowledge.db，与 chat_memory.db / maid_memory.db 零耦合
 const Database = require('better-sqlite3');
 const path = require('path');
 const logger = require('../utils/logger');
@@ -57,7 +58,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_exp_adopted ON dev_experience(adopted, ts DESC);
 `);
 
+// ===== 预编译语句 =====
 const stmt = {
+  // L0
   insertEvent: db.prepare(
     'INSERT INTO dev_events (ts, source, task_type, raw_input, raw_output, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ),
@@ -72,14 +75,48 @@ const stmt = {
   countEvents: db.prepare('SELECT COUNT(*) AS c FROM dev_events'),
   countDistilled: db.prepare('SELECT COUNT(*) AS c FROM dev_events WHERE distilled = 1'),
   countUnstructured: db.prepare('SELECT COUNT(*) AS c FROM dev_events WHERE unstructured = 1'),
+
+  // L1
+  insertExperience: db.prepare(
+    'INSERT INTO dev_experience (ts, source_event_id, task_type, problem, solution, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ),
+  getExperienceById: db.prepare('SELECT * FROM dev_experience WHERE id = ?'),
+  updateEmbeddingStatus: db.prepare(
+    'UPDATE dev_experience SET embedding_status = ?, vector_id = ? WHERE id = ?'
+  ),
+  adoptExperience: db.prepare('UPDATE dev_experience SET adopted = 1 WHERE id = ?'),
+  countExperience: db.prepare('SELECT COUNT(*) AS c FROM dev_experience'),
+  countEmbeddingPending: db.prepare(
+    "SELECT COUNT(*) AS c FROM dev_experience WHERE embedding_status = 'pending'"
+  ),
+  // searchExperience 的 fallback SQL（周四换向量后保留为兜底）
+  searchFallbackNoType: db.prepare(
+    'SELECT * FROM dev_experience WHERE reusable = 1 ORDER BY adopted DESC, ts DESC LIMIT ?'
+  ),
+  searchFallbackWithType: db.prepare(
+    'SELECT * FROM dev_experience WHERE reusable = 1 AND task_type = ? ORDER BY adopted DESC, ts DESC LIMIT ?'
+  ),
 };
 
+// ===== 事务 =====
 const txMarkDistilled = db.transaction((ids) => {
   for (const id of ids) stmt.markDistilled.run(id);
 });
 const txMarkUnstructured = db.transaction((ids) => {
   for (const id of ids) stmt.markUnstructured.run(id);
 });
+
+// ===== 行反序列化 =====
+function rowToEvent(r) {
+  if (!r) return null;
+  return { ...r, files_touched: r.files_touched ? JSON.parse(r.files_touched) : [] };
+}
+function rowToExperience(r) {
+  if (!r) return null;
+  return { ...r, files_touched: r.files_touched ? JSON.parse(r.files_touched) : [] };
+}
+
+// ==================== L0 ====================
 
 function writeEvent(ev) {
   ev = ev || {};
@@ -102,10 +139,7 @@ function writeEvent(ev) {
 function getUndistilled(limit) {
   limit = limit || 20;
   const rows = stmt.getUndistilled.all(limit);
-  return rows.map(r => ({
-    ...r,
-    files_touched: r.files_touched ? JSON.parse(r.files_touched) : [],
-  }));
+  return rows.map(rowToEvent);
 }
 
 function markDistilled(ids) {
@@ -130,16 +164,86 @@ function adoptEvent(id) {
 }
 
 function getEventById(id) {
-  const r = stmt.getEventById.get(id);
-  if (r === undefined) return null;
-  return { ...r, files_touched: r.files_touched ? JSON.parse(r.files_touched) : [] };
+  return rowToEvent(stmt.getEventById.get(id));
 }
+
+// ==================== L1 ====================
+
+/**
+ * 写入 L1 结构化经验
+ * @param {object} exp
+ * @param {number} [exp.sourceEventId]  关联的 L0 id
+ * @param {string} exp.taskType
+ * @param {string} exp.problem
+ * @param {string} exp.solution
+ * @param {string[]} [exp.filesTouched]
+ * @param {string} [exp.outcome='success']
+ */
+function writeExperience(exp) {
+  if (!exp || !exp.taskType || !exp.problem || !exp.solution) {
+    throw new Error('[DevMemory] writeExperience 缺少必填字段 taskType/problem/solution');
+  }
+  const filesJson = Array.isArray(exp.filesTouched) && exp.filesTouched.length
+    ? JSON.stringify(exp.filesTouched)
+    : null;
+  const info = stmt.insertExperience.run(
+    Date.now(),
+    exp.sourceEventId || null,
+    exp.taskType,
+    exp.problem,
+    exp.solution,
+    filesJson,
+    exp.outcome || 'success'
+  );
+  logger.info(`[DevMemory] L1 写入 id=${info.lastInsertRowid} task=${exp.taskType}`);
+  return { id: info.lastInsertRowid };
+}
+
+function getExperienceById(id) {
+  return rowToExperience(stmt.getExperienceById.get(id));
+}
+
+function updateEmbeddingStatus(id, status, vectorId) {
+  stmt.updateEmbeddingStatus.run(status, vectorId || null, id);
+  logger.info(`[DevMemory] embedding 状态 id=${id} -> ${status}${vectorId ? ' vector_id=' + vectorId : ''}`);
+}
+
+function adoptExperience(id) {
+  stmt.adoptExperience.run(id);
+  logger.info(`[DevMemory] 采纳 L1 id=${id}`);
+}
+
+/**
+ * 语义检索 —— 明天先用 SQLite fallback，周四换成 p3-vector
+ * @param {string} query
+ * @param {object} [opts]
+ * @param {number} [opts.topK=3]
+ * @param {string} [opts.taskType=null]
+ * @returns {Array<object>}
+ */
+function searchExperience(query, opts) {
+  opts = opts || {};
+  const topK = opts.topK || 3;
+  const taskType = opts.taskType || null;
+
+  // TODO(W2 周四): 替换为 p3-vector /search 调用
+  //   约定: user_id='dev_me', memory_type='dev_experience', point_id='dev_exp_<id>'
+  // fallback: 按 task_type 过滤 + adopted/ts 排序
+  const rows = taskType
+    ? stmt.searchFallbackWithType.all(taskType, topK)
+    : stmt.searchFallbackNoType.all(topK);
+  return rows.map(rowToExperience);
+}
+
+// ==================== 统计 / 自检 ====================
 
 function stats() {
   return {
     events: stmt.countEvents.get().c,
     distilled: stmt.countDistilled.get().c,
     unstructured: stmt.countUnstructured.get().c,
+    experience: stmt.countExperience.get().c,
+    embedding_pending: stmt.countEmbeddingPending.get().c,
   };
 }
 
@@ -157,6 +261,7 @@ function selfCheck() {
 }
 
 module.exports = {
+  // L0
   writeEvent,
   getUndistilled,
   markDistilled,
@@ -164,8 +269,16 @@ module.exports = {
   updateEventOutcome,
   adoptEvent,
   getEventById,
+  // L1
+  writeExperience,
+  getExperienceById,
+  updateEmbeddingStatus,
+  adoptExperience,
+  searchExperience,
+  // 统计
   stats,
   selfCheck,
+  // 调试
   _raw: db,
   _stmt: stmt,
 };
