@@ -148,3 +148,49 @@ W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
 ### 经验教训（累积）
 - 所有 >30 行脚本用两段式：先写 /tmp/xxx.tmp.js，验证后 cp 到目标
 - Node 只认 .js/.mjs/.cjs，临时文件用 .tmp.js 不用 .new
+
+### W2 周二补充（2026-10-27 晚）：搜索埋点前置
+
+#### 做了什么
+- dev_knowledge.db 新增 dev_search_log 表（12 字段 + 3 索引）
+- searchExperience 内嵌埋点，失败不阻塞主流程
+- scripts/init-dev-knowledge.js 同步新表结构
+- 4 张表：dev_events / dev_experience / dev_patterns / dev_search_log
+
+#### 为什么现在做
+- W7 的点阵图和策略优化依赖历史搜索数据
+- 数据埋点前置，W2-W6 的搜索行为才能被记录
+- 成本 15 分钟，但不做的话 W7 分析就是无米之炊
+
+#### 埋点字段
+- query / query_norm：原始查询 + 归一化（小写去标点）
+- hit_count / hit_ids：命中数 + 命中的 L1 id 数组
+- top_score：最高相似度（周四接向量后填充）
+- adopted_hit：命中结果里是否有 adopted=1
+- source：'dev' | 'qq' | 'web'（区分来源）
+- latency_ms：检索耗时
+
+#### 提交
+- 1055869 feat(W2): 新增 dev_search_log 埋点表 + searchExperience 记录每次检索
+
+#### 对后续的影响
+- 周四向量同步时，searchExperience 换成 p3-vector 调用，埋点代码一行不用改
+- 因为埋点在检索逻辑之外，hits 结构不变（{id, problem, solution, score}）
+- W7 直接基于 dev_search_log 出点阵图和策略建议
+
+#### 验收
+- 手动触发 1 次检索，search_log 从 0 → 1，字段完整
+- L0/L1 两套测试仍全绿，无回归
+
+### 明日计划（10/28 周三）
+
+- 上午：跑 L0+L1 两套测试确认状态（10min）
+- 中午：50% 检查点，确认三核心方法在（5min）
+- 晚上：休息，不写代码
+
+### 周四计划（10/29）
+
+- searchExperience 从 SQLite fallback 换成 p3-vector 向量检索
+- 新增 syncExperienceToVector(id) 调 /ingest
+- 约定：user_id='dev_me', memory_type='dev_experience', point_id='dev_exp_<id>'
+- 埋点代码零改动，只改检索逻辑
