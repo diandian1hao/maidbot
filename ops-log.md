@@ -124,3 +124,27 @@ W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
 - 上午：L1 五方法追加到 devMemory.js
 - 下午：scripts/test-dev-memory-l1.js（含外键 ON DELETE SET NULL 验证）
 - 晚上：commit + push
+
+## W2 周二（2026-10-27）：L1 层完成
+
+### 完成事项
+- core/devMemory.js 覆盖重写，L0 9 方法 + L1 5 方法（284 行）
+- scripts/test-dev-memory-l1.js 7 项测试全绿
+- 外键 ON DELETE SET NULL 验证通过
+- searchExperience 先用 SQLite fallback（按 task_type + adopted/ts 排序）
+
+### 提交
+- 本轮 commit hash 待补
+
+### 周三 50% 检查点预判
+- writeExperience ✅ / searchExperience ✅ / updateEmbeddingStatus ✅
+- 判定：达标，周三晚不需砍单
+
+### 周四计划
+- searchExperience 从 SQLite fallback 换成 p3-vector 向量检索
+- 新增 syncExperienceToVector(id) 调 /ingest
+- 约定：user_id='dev_me', memory_type='dev_experience', point_id='dev_exp_<id>'
+
+### 经验教训（累积）
+- 所有 >30 行脚本用两段式：先写 /tmp/xxx.tmp.js，验证后 cp 到目标
+- Node 只认 .js/.mjs/.cjs，临时文件用 .tmp.js 不用 .new
