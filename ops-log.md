@@ -227,7 +227,7 @@ W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
   - 向量 API 不可达时降级为 SQLite fallback，不抛异常
 
 ### 提交
-- 待补 commit hash
+- 3d8846a feat(W2): devMemory 接入 p3-vector 向量检索
 
 ### W2 完成度
 - M1 建表 ✅ / M2 L0 ✅ / M3 L1 ✅ / M3.5 埋点 ✅ / M4 向量同步 ✅
