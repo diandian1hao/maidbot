@@ -241,3 +241,42 @@ W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
 
 ### 周五计划（10/30）
 - 开始 W3：蒸馏链路（prompts/dev-distill.md + core/devDistiller.js）
+
+### W2 周三下午：端到端 + 冷启动灌入（W2 完成）
+
+#### 端到端测试
+- test-dev-knowledge-e2e.js：9 步全绿
+- 链路：L0 → 模拟蒸馏 → L1 → 向量同步 → 检索命中（score 0.68）
+  → 埋点 top_score → stats 对齐 → 清理
+- 结论：数据层完整闭环
+
+#### 冷启动灌入
+- bootstrap-dev-knowledge.js：17 条 L0
+- README 11 段 + CHANGELOG 1 段 + ops-log 5 段
+- 全部 source='file', taskType='note', 待 W3 蒸馏
+- 支持 --dry-run 预览，MAX_SEGMENTS=20
+
+#### 修复
+- test-dev-memory-l0.js / e2e 的 getUndistilled(10) → (100)
+- 原因：17 条旧 L0 把新写的挤出 top 10 窗口
+- 教训：测试假设随数据增长会失效，limit 要给足余量
+
+#### W2 完成度：100%
+- M1 建表 ✅ / M2 L0 ✅ / M3 L1 ✅ / M3.5 埋点 ✅
+- M4 向量同步 ✅ / M5 E2E ✅ / M6 灌入 ✅
+- 复盘待周日
+
+#### 累计数据
+- dev_events: 17（待蒸馏）
+- dev_experience: 0（W3 产出）
+- dev_search_log: 8+（测试埋点，保留）
+- p3-vector: 3 条探测遗留（dev_me 下，不影响后续）
+
+### 周四计划（10/29）
+- 只跑四套测试确认状态（5min）
+- 补 W2 复盘到 ops-log（15min）
+- 不写新代码
+
+### 周五计划（10/30）
+- 正式进 W3：prompts/dev-distill.md + core/devDistiller.js
+- W3 目标：把 17 条 L0 自动蒸馏成 L1
