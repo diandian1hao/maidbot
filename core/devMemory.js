@@ -1,9 +1,14 @@
-// core/devMemory.js —— 开发知识库（L0 + L1 + 搜索埋点）
+// core/devMemory.js —— 开发知识库（L0 + L1 + 向量同步 + 埋点）
 const Database = require('better-sqlite3');
+const axios = require('axios');
 const path = require('path');
 const logger = require('../utils/logger');
 
 const DB_FILE = path.join(__dirname, '../dev_knowledge.db');
+const VECTOR_API = process.env.VECTOR_API_URL || 'http://127.0.0.1:8000';
+const POINT_ID_OFFSET = 1_000_000_000;
+const DEV_USER_ID = 'dev_me';
+const DEV_MEMORY_TYPE = 'dev_experience';
 
 const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
@@ -75,13 +80,8 @@ db.exec(`
 `);
 
 const stmt = {
-  // ===== L0 =====
-  insertEvent: db.prepare(
-    'INSERT INTO dev_events (ts, source, task_type, raw_input, raw_output, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ),
-  getUndistilled: db.prepare(
-    'SELECT * FROM dev_events WHERE distilled = 0 AND unstructured = 0 ORDER BY ts ASC LIMIT ?'
-  ),
+  insertEvent: db.prepare('INSERT INTO dev_events (ts, source, task_type, raw_input, raw_output, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  getUndistilled: db.prepare('SELECT * FROM dev_events WHERE distilled = 0 AND unstructured = 0 ORDER BY ts ASC LIMIT ?'),
   markDistilled: db.prepare('UPDATE dev_events SET distilled = 1 WHERE id = ?'),
   markUnstructured: db.prepare('UPDATE dev_events SET unstructured = 1, distilled = -1 WHERE id = ?'),
   updateOutcome: db.prepare('UPDATE dev_events SET outcome = ? WHERE id = ?'),
@@ -90,29 +90,15 @@ const stmt = {
   countEvents: db.prepare('SELECT COUNT(*) AS c FROM dev_events'),
   countDistilled: db.prepare('SELECT COUNT(*) AS c FROM dev_events WHERE distilled = 1'),
   countUnstructured: db.prepare('SELECT COUNT(*) AS c FROM dev_events WHERE unstructured = 1'),
-  // ===== L1 =====
-  insertExperience: db.prepare(
-    'INSERT INTO dev_experience (ts, source_event_id, task_type, problem, solution, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ),
+  insertExperience: db.prepare('INSERT INTO dev_experience (ts, source_event_id, task_type, problem, solution, files_touched, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   getExperienceById: db.prepare('SELECT * FROM dev_experience WHERE id = ?'),
-  updateEmbeddingStatus: db.prepare(
-    'UPDATE dev_experience SET embedding_status = ?, vector_id = ? WHERE id = ?'
-  ),
+  updateEmbeddingStatus: db.prepare('UPDATE dev_experience SET embedding_status = ?, vector_id = ? WHERE id = ?'),
   adoptExperience: db.prepare('UPDATE dev_experience SET adopted = 1 WHERE id = ?'),
   countExperience: db.prepare('SELECT COUNT(*) AS c FROM dev_experience'),
-  countEmbeddingPending: db.prepare(
-    "SELECT COUNT(*) AS c FROM dev_experience WHERE embedding_status = 'pending'"
-  ),
-  searchFallbackNoType: db.prepare(
-    'SELECT * FROM dev_experience WHERE reusable = 1 ORDER BY adopted DESC, ts DESC LIMIT ?'
-  ),
-  searchFallbackWithType: db.prepare(
-    'SELECT * FROM dev_experience WHERE reusable = 1 AND task_type = ? ORDER BY adopted DESC, ts DESC LIMIT ?'
-  ),
-  // ===== 埋点 =====
-  insertSearchLog: db.prepare(
-    'INSERT INTO dev_search_log (ts, query, query_norm, top_k, hit_count, hit_ids, top_score, adopted_hit, source, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ),
+  countEmbeddingPending: db.prepare("SELECT COUNT(*) AS c FROM dev_experience WHERE embedding_status = 'pending'"),
+  searchFallbackNoType: db.prepare('SELECT * FROM dev_experience WHERE reusable = 1 ORDER BY adopted DESC, ts DESC LIMIT ?'),
+  searchFallbackWithType: db.prepare('SELECT * FROM dev_experience WHERE reusable = 1 AND task_type = ? ORDER BY adopted DESC, ts DESC LIMIT ?'),
+  insertSearchLog: db.prepare('INSERT INTO dev_search_log (ts, query, query_norm, top_k, hit_count, hit_ids, top_score, adopted_hit, source, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   countSearchLog: db.prepare('SELECT COUNT(*) AS c FROM dev_search_log'),
 };
 
@@ -132,7 +118,6 @@ function rowToExperience(r) {
   return { ...r, files_touched: r.files_touched ? JSON.parse(r.files_touched) : [] };
 }
 
-// 归一化 query：小写 + 去标点 + 保留中英文字符
 function normalizeQuery(q) {
   if (!q) return '';
   return String(q).toLowerCase().replace(/[^\w\u4e00-\u9fa5]+/g, ' ').trim();
@@ -147,108 +132,136 @@ function writeEvent(ev) {
   const rawOutput = ev.rawOutput || null;
   const filesTouched = ev.filesTouched || [];
   const outcome = ev.outcome || 'pending';
-  const filesJson = Array.isArray(filesTouched) && filesTouched.length
-    ? JSON.stringify(filesTouched) : null;
+  const filesJson = Array.isArray(filesTouched) && filesTouched.length ? JSON.stringify(filesTouched) : null;
   const info = stmt.insertEvent.run(Date.now(), source, taskType, rawInput, rawOutput, filesJson, outcome);
   logger.info(`[DevMemory] L0 写入 id=${info.lastInsertRowid} source=${source} task=${taskType || '-'}`);
   return { id: info.lastInsertRowid };
 }
-
 function getUndistilled(limit) {
   limit = limit || 20;
   return stmt.getUndistilled.all(limit).map(rowToEvent);
 }
-
 function markDistilled(ids) {
-  if (ids === undefined || ids === null || ids.length === 0) return;
+  if (!ids || !ids.length) return;
   txMarkDistilled(ids);
-  logger.info(`[DevMemory] 标记已蒸馏 ${ids.length} 条: ${ids.join(',')}`);
+  logger.info(`[DevMemory] 标记已蒸馏 ${ids.length} 条`);
 }
-
 function markUnstructured(ids) {
-  if (ids === undefined || ids === null || ids.length === 0) return;
+  if (!ids || !ids.length) return;
   txMarkUnstructured(ids);
-  logger.warn(`[DevMemory] 降级 ${ids.length} 条: ${ids.join(',')}`);
+  logger.warn(`[DevMemory] 降级 ${ids.length} 条`);
 }
-
-function updateEventOutcome(id, outcome) {
-  stmt.updateOutcome.run(outcome, id);
-}
-
-function adoptEvent(id) {
-  stmt.adoptEvent.run(id);
-  logger.info(`[DevMemory] 采纳 L0 id=${id}`);
-}
-
-function getEventById(id) {
-  return rowToEvent(stmt.getEventById.get(id));
-}
+function updateEventOutcome(id, outcome) { stmt.updateOutcome.run(outcome, id); }
+function adoptEvent(id) { stmt.adoptEvent.run(id); logger.info(`[DevMemory] 采纳 L0 id=${id}`); }
+function getEventById(id) { return rowToEvent(stmt.getEventById.get(id)); }
 
 // ==================== L1 ====================
 function writeExperience(exp) {
   if (!exp || !exp.taskType || !exp.problem || !exp.solution) {
     throw new Error('[DevMemory] writeExperience 缺少必填字段 taskType/problem/solution');
   }
-  const filesJson = Array.isArray(exp.filesTouched) && exp.filesTouched.length
-    ? JSON.stringify(exp.filesTouched) : null;
+  const filesJson = Array.isArray(exp.filesTouched) && exp.filesTouched.length ? JSON.stringify(exp.filesTouched) : null;
   const info = stmt.insertExperience.run(
-    Date.now(),
-    exp.sourceEventId || null,
-    exp.taskType,
-    exp.problem,
-    exp.solution,
-    filesJson,
-    exp.outcome || 'success'
+    Date.now(), exp.sourceEventId || null, exp.taskType, exp.problem, exp.solution, filesJson, exp.outcome || 'success'
   );
   logger.info(`[DevMemory] L1 写入 id=${info.lastInsertRowid} task=${exp.taskType}`);
   return { id: info.lastInsertRowid };
 }
-
-function getExperienceById(id) {
-  return rowToExperience(stmt.getExperienceById.get(id));
-}
-
+function getExperienceById(id) { return rowToExperience(stmt.getExperienceById.get(id)); }
 function updateEmbeddingStatus(id, status, vectorId) {
   stmt.updateEmbeddingStatus.run(status, vectorId || null, id);
   logger.info(`[DevMemory] embedding 状态 id=${id} -> ${status}${vectorId ? ' vector_id=' + vectorId : ''}`);
 }
+function adoptExperience(id) { stmt.adoptExperience.run(id); logger.info(`[DevMemory] 采纳 L1 id=${id}`); }
 
-function adoptExperience(id) {
-  stmt.adoptExperience.run(id);
-  logger.info(`[DevMemory] 采纳 L1 id=${id}`);
+// ==================== 向量同步 ====================
+/**
+ * 把一条 L1 同步到 p3-vector
+ * point_id = POINT_ID_OFFSET + id
+ */
+async function syncExperienceToVector(id) {
+  const row = getExperienceById(id);
+  if (!row) {
+    logger.warn(`[DevMemory] sync 跳过：L1 id=${id} 不存在`);
+    return { ok: false, error: 'not found' };
+  }
+  const pointId = POINT_ID_OFFSET + id;
+  const content = `${row.problem}\n${row.solution}`;
+  try {
+    const res = await axios.post(`${VECTOR_API}/ingest`, {
+      point_id: pointId,
+      user_id: DEV_USER_ID,
+      memory_type: DEV_MEMORY_TYPE,
+      content,
+    }, { timeout: 10000 });
+
+    if (res.data && res.data.ok === true) {
+      updateEmbeddingStatus(id, 'done', String(pointId));
+      return { ok: true, pointId };
+    }
+    throw new Error(JSON.stringify(res.data).slice(0, 200));
+  } catch (e) {
+    const msg = e.response?.data ? JSON.stringify(e.response.data).slice(0, 200) : e.message;
+    updateEmbeddingStatus(id, 'failed', null);
+    logger.warn(`[DevMemory] sync 失败 id=${id}: ${msg}`);
+    return { ok: false, error: msg };
+  }
 }
 
-/**
- * 检索 L1（当前 SQLite fallback，周四换 p3-vector）
- * 带埋点：每次检索都写 dev_search_log，失败不阻塞
- */
-function searchExperience(query, opts) {
+// ==================== 检索（向量优先 + SQLite 降级 + 埋点）====================
+async function searchExperience(query, opts) {
   opts = opts || {};
   const topK = opts.topK || 3;
   const taskType = opts.taskType || null;
   const source = opts.source || 'dev';
   const t0 = Date.now();
+  const searchTopK = taskType ? topK * 3 : topK;
 
-  // TODO(W2 周四): 替换为 p3-vector /search 调用
-  const rows = taskType
-    ? stmt.searchFallbackWithType.all(taskType, topK)
-    : stmt.searchFallbackNoType.all(topK);
-  const hits = rows.map(rowToExperience);
+  let hits = [];
+  let vectorOk = false;
+  let topScore = null;
+
+  try {
+    const res = await axios.post(`${VECTOR_API}/search`, {
+      query,
+      user_id: DEV_USER_ID,
+      memory_type: DEV_MEMORY_TYPE,
+      top_k: searchTopK,
+    }, { timeout: 15000 });
+
+    const results = res.data?.results || [];
+    hits = results
+      .map(r => {
+        const l1Id = r.id - POINT_ID_OFFSET;
+        const row = getExperienceById(l1Id);
+        if (!row) return null;
+        if (taskType && row.task_type !== taskType) return null;
+        return { ...row, score: r.score };
+      })
+      .filter(Boolean)
+      .slice(0, topK);
+
+    if (hits.length > 0) topScore = hits[0].score;
+    vectorOk = true;
+  } catch (e) {
+    logger.warn(`[DevMemory] 向量检索失败，降级 SQLite: ${e.message}`);
+  }
+
+  if (!vectorOk) {
+    const rows = taskType
+      ? stmt.searchFallbackWithType.all(taskType, topK)
+      : stmt.searchFallbackNoType.all(topK);
+    hits = rows.map(rowToExperience);
+  }
+
   const latency = Date.now() - t0;
 
-  // ===== 埋点（不阻塞）=====
   try {
     stmt.insertSearchLog.run(
-      Date.now(),
-      String(query || ''),
-      normalizeQuery(query),
-      topK,
-      hits.length,
-      JSON.stringify(hits.map(h => h.id)),
-      null, // top_score 待周四接入向量后填充
-      hits.some(h => h.adopted === 1) ? 1 : 0,
-      source,
-      latency
+      Date.now(), String(query || ''), normalizeQuery(query),
+      topK, hits.length, JSON.stringify(hits.map(h => h.id)),
+      topScore, hits.some(h => h.adopted === 1) ? 1 : 0,
+      source, latency
     );
   } catch (e) {
     logger.warn(`[DevMemory] search 埋点失败: ${e.message}`);
@@ -257,7 +270,7 @@ function searchExperience(query, opts) {
   return hits;
 }
 
-// ==================== 统计 / 自检 ====================
+// ==================== 统计 ====================
 function stats() {
   return {
     events: stmt.countEvents.get().c,
@@ -268,13 +281,12 @@ function stats() {
     search_log: stmt.countSearchLog.get().c,
   };
 }
-
 function selfCheck() {
-  const tables = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'dev_%' ORDER BY name"
-  ).all().map(r => r.name);
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'dev_%' ORDER BY name").all().map(r => r.name);
   return {
     db: DB_FILE,
+    vector_api: VECTOR_API,
+    point_id_offset: POINT_ID_OFFSET,
     journal_mode: db.pragma('journal_mode', { simple: true }),
     foreign_keys: db.pragma('foreign_keys', { simple: true }),
     tables,
@@ -285,7 +297,8 @@ function selfCheck() {
 module.exports = {
   writeEvent, getUndistilled, markDistilled, markUnstructured,
   updateEventOutcome, adoptEvent, getEventById,
-  writeExperience, getExperienceById, updateEmbeddingStatus, adoptExperience, searchExperience,
+  writeExperience, getExperienceById, updateEmbeddingStatus, adoptExperience,
+  syncExperienceToVector, searchExperience,
   stats, selfCheck,
   _raw: db, _stmt: stmt,
 };
