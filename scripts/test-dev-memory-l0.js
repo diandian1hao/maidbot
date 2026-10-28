@@ -25,7 +25,7 @@ const e1 = dm.writeEvent({
 assert(typeof e1.id === 'number' && e1.id > 0, 'writeEvent 返回有效 id');
 
 console.log('\n=== 测试 2: getUndistilled ===');
-const pending = dm.getUndistilled(10);
+const pending = dm.getUndistilled(100);
 assert(pending.length >= 1, 'getUndistilled 能读到刚写的事件');
 const hit = pending.find(p => p.id === e1.id);
 assert(hit !== undefined, '刚写的事件在待蒸馏列表里');
@@ -34,7 +34,7 @@ assert(hit.files_touched[0] === 'core/devMemory.js', 'files_touched 内容正确
 
 console.log('\n=== 测试 3: markDistilled ===');
 dm.markDistilled([e1.id]);
-const after = dm.getUndistilled(10);
+const after = dm.getUndistilled(100);
 const stillPending = after.find(p => p.id === e1.id);
 assert(stillPending === undefined, 'markDistilled 后不再出现在待蒸馏列表');
 assert(dm.stats().distilled >= 1, 'stats.distilled 已增加');
