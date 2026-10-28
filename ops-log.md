@@ -194,3 +194,50 @@ W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
 - 新增 syncExperienceToVector(id) 调 /ingest
 - 约定：user_id='dev_me', memory_type='dev_experience', point_id='dev_exp_<id>'
 - 埋点代码零改动，只改检索逻辑
+
+## W2 周三提前完成（2026-10-27 晚）：向量同步
+
+### 探测发现
+- p3-vector 的 point_id 必须是整数（Pydantic 422 int_parsing）
+- /search 返回 {id: 整数, score, content, memory_type}
+- memory_type 过滤生效（2/1/0 完全符合）
+- user_id 隔离生效（other_user 返回 0）
+
+### 方案定稿
+- point_id = 1_000_000_000 + L1.id（10 亿偏移，与 chat_memory 整数 id 天然隔离）
+- content = `${problem}\n${solution}`
+- 反查：results[i].id - 1e9 = L1.id
+- taskType 过滤：向量检索 top_k 放大 3 倍，结果二次过滤后截断
+- 降级：向量检索失败 → SQLite fallback
+
+### 完成事项
+- core/devMemory.js：新增 syncExperienceToVector(id)，searchExperience 改 async
+- searchExperience：向量优先 + SQLite 降级 + 埋点保留（记录 top_score）
+- scripts/test-dev-memory-l1.js：改 async 版（searchExperience 加 await）
+- scripts/test-dev-knowledge-vector.js：新增 5 项向量测试
+
+### 测试结果
+- L0 测试：全绿
+- L1 测试（async 版）：全绿
+- 向量同步测试：5 项全绿
+  - ingest + point_id 偏移正确
+  - 向量检索命中 + score 数字
+  - 埋点记录 top_score
+  - taskType 过滤生效
+  - 向量 API 不可达时降级为 SQLite fallback，不抛异常
+
+### 提交
+- 待补 commit hash
+
+### W2 完成度
+- M1 建表 ✅ / M2 L0 ✅ / M3 L1 ✅ / M3.5 埋点 ✅ / M4 向量同步 ✅
+- 剩余 M5 端到端测试（周四 30 分钟）+ M6 复盘（周日 30 分钟）
+- 比原计划提前 2 天
+
+### 周四计划（10/29）
+- 端到端测试脚本 scripts/test-dev-knowledge-e2e.js（L0→L1→向量→检索全链路）
+- 跑一次 bootstrap 灌 20 条 L0 验证蒸馏前的入库
+- W2 复盘提前到周六，周五开始 W3
+
+### 周五计划（10/30）
+- 开始 W3：蒸馏链路（prompts/dev-distill.md + core/devDistiller.js）
