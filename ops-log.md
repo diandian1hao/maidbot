@@ -280,3 +280,67 @@ W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
 ### 周五计划（10/30）
 - 正式进 W3：prompts/dev-distill.md + core/devDistiller.js
 - W3 目标：把 17 条 L0 自动蒸馏成 L1
+
+## W2 复盘（2026-10-26 ～ 10-28，提前 4 天完成）
+
+### 与原计划对比
+
+| 里程碑 | 原计划 | 实际 | 偏差 |
+|--------|--------|------|------|
+| M1 建表 | 10/27 | 10/26 | 提前 1 天 |
+| M2 L0 层 | 10/28 | 10/26 | 提前 2 天 |
+| M3 L1 层 | 10/28 | 10/27 | 提前 1 天 |
+| M3.5 搜索埋点 | 未计划 | 10/27 | 额外完成 |
+| M4 向量同步 | 10/29 | 10/27 | 提前 2 天 |
+| M5 端到端 | 10/30 | 10/28 | 提前 2 天 |
+| M6 冷启动灌入 | 11/01 | 10/28 | 提前 4 天 |
+
+### 交付物清单
+
+代码（8 个文件）：
+- core/devMemory.js：L0 9 方法 + L1 5 方法 + 向量同步 + 埋点
+- scripts/init-dev-knowledge.js：4 表 10 索引
+- scripts/backup_db.js：三库备份扩展
+- scripts/bootstrap-dev-knowledge.js：冷启动灌入
+- scripts/test-dev-memory-l0.js / l1.js / knowledge-vector.js / knowledge-e2e.js：四套测试
+
+数据库：
+- dev_knowledge.db：dev_events 17 / dev_experience 0 / dev_patterns 0 / dev_search_log 25+
+- p3-vector：dev_me 下 0 条（孤儿点已清理）
+
+### 做对了什么
+
+1. 数据隔离：三个库零耦合
+2. 埋点前置：W2 就建好 dev_search_log
+3. 降级机制：向量失败自动 fallback SQLite
+4. 两段式写入：>30 行脚本先写 /tmp 再 cp
+5. 探测先行：向量同步前先探测 4 个未知数
+
+### 踩过的坑（W2 新增）
+
+| # | 坑 | 教训 |
+|---|-----|------|
+| 10 | /tmp 下 require axios 失败 | Node 20 自带 fetch，探测脚本用 fetch 绕开 |
+| 11 | 冷启动灌入后测试 FAIL | 测试假设「库里只有自己那 1 条」失效，limit 10→100 |
+| 12 | point_id 字符串 422 | p3-vector 用 Pydantic 强校验，必须整数，用 1e9 偏移 |
+| 13 | 测试残留 2 条 L0 + 9 个孤儿向量 | 清理逻辑放 finally，不依赖 catch + 末尾手动清 |
+
+### p3-vector 删除接口备忘
+
+- 端点：`POST /delete`
+- 字段：`{"point_ids": [id1, id2, ...]}`（复数数组，不是 point_id 单数）
+- 可用端点：`/ingest`, `/search`, `/delete`, `/health`
+
+### W2 的关键决策
+
+1. point_id = 1_000_000_000 + L1.id：可逆、不撞车
+2. searchExperience 改 async：向量检索本质异步
+3. 蒸馏留到 W3：W2 只做数据层
+4. 埋点表独立：不混入 dev_events
+
+### 对 W3 的输入
+
+- 17 条 L0 待蒸馏（README 11 + CHANGELOG 1 + ops-log 5）
+- 蒸馏 Worker 需要：getUndistilled(20) → LLM → 写 L1 → sync 向量
+- 蒸馏质量决定后续检索命中率
+- W3 预估耗时 2.5 小时
