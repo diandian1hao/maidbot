@@ -17,6 +17,7 @@ const worker = require('./core/worker');
 const pipeline = require('./core/pipeline');    // 🆕 双端共享管道
 const { Queue } = require('bullmq');            // 🆕 BullMQ Producer
 const qqClient = require('./core/qqClient');
+const devDistiller = require('./core/devDistiller');
 
 // ====== QQ 平台事件处理 ======
 function onQQEvent(t, d) {
@@ -276,6 +277,11 @@ setInterval(() => {
     logger.error('[P0] 备份失败: ' + e.message);
   }
 }, 6 * 3600 * 1000).unref();
+
+// ====== W3: 30 分钟定时蒸馏 L0 -> L1 ======
+setInterval(() => {
+  devDistiller.distillPending(10).catch(e => logger.error('[DevDistiller] 定时任务失败: ' + e.message));
+}, 30 * 60 * 1000).unref();
 
 // ====== 启动 ======
 async function start() {
