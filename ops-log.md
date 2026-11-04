@@ -344,3 +344,29 @@ W2 周四只需写 syncExperienceToVector(id) 调 /ingest。
 - 蒸馏 Worker 需要：getUndistilled(20) → LLM → 写 L1 → sync 向量
 - 蒸馏质量决定后续检索命中率
 - W3 预估耗时 2.5 小时
+
+## W3 复盘（2026-11-02 ～ 11-08，提前 4 天完成）
+
+### 目标完成情况
+- [x] prompts/dev-distill.md
+- [x] core/devDistiller.js (含 JSON 提取、降级逻辑)
+- [x] 手动灌 17 条 L0，全部成功转化为 L1
+- [x] index.js 挂载 30 分钟定时蒸馏任务
+
+### 核心突破
+1. **全链路跑通**：L0 提取 -> GLM-4-Flash 蒸馏 -> JSON 校验 -> 写 L1 -> 同步 p3-vector。
+2. **零成本蒸馏**：全程使用免费的 glm-4-flash，平均延迟 3-9 秒。
+3. **高稳定性提取**：`extractJSON` 采用首尾 `{}` 截取法，完美规避了 LLM 输出多余 Markdown 标记导致 JSON.parse 崩溃的问题。
+4. **全自动化**：不再需要手动触发脚本，定时器每 30 分钟自动处理。
+
+### 当前数据状态
+- dev_events: 17 (distilled=17, unstructured=0)
+- dev_experience: 17 (全部 embedding_status='done')
+- p3-vector: 17 (完全对应，无孤儿点)
+
+### 经验与坑
+- 大模型提取经验时，如果原文是“架构文档”或“目录结构”，提取出的 `problem` 依然很准（如“系统架构设计”）。这说明直接对文档进行蒸馏是可行的，W6 的冷启动方向是对的。
+
+### 下一步（W4）
+- 实现 `devPipeline` 共享管道。
+- 链路：用户输入 -> 提取检索词 -> 查 L1 -> 生成代码(DeepSeek) -> 异模型审查(GLM) -> 返回。
