@@ -1,12 +1,11 @@
-// plugins/weather.js - 天气数据源 + 灾害预警 + 关键词响应（无需 GeoAPI）
+// plugins/weather.js - 天气数据源 + 灾害预警 + 详细播报（字典兜底版）
 const KEY = process.env.QWEATHER_KEY;
 const LOC = process.env.QWEATHER_LOCATION;
-const HOST = (process.env.QWEATHER_HOST || 'devapi.qweather.com')
-  .replace(/^https?:\/\//, '')
-  .replace(/\/+$/, '');
+const HOST = (process.env.QWEATHER_HOST || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
 const H = `https://${HOST}/v7`;
+const GEO_H = `https://${HOST}/geo/v2`;
 
-// ⭐ 内置常用城市 Location ID（和风天气官方固定 ID，无需 GeoAPI）
+// 内置城市字典，防止 GeoAPI 权限失效导致无法查询
 const CITY_MAP = {
   '北京':'101010100','上海':'101020100','广州':'101280101','深圳':'101280601',
   '成都':'101270101','杭州':'101210101','武汉':'101200101','西安':'101110101',
@@ -23,12 +22,7 @@ const CITY_MAP = {
   '三亚':'101310201','湖州':'101210201','呼和浩特':'101080101','廊坊':'101090601',
   '洛阳':'101180901','威海':'101121301','盐城':'101190701','临沂':'101120901',
   '江门':'101281101','汕头':'101280501','泰州':'101191201','漳州':'101230601',
-  '邯郸':'101091001','济宁':'101120701','芜湖':'101220301','淄博':'101120301',
-  '银川':'101170101','柳州':'101300301','绵阳':'101270401','湛江':'101281001',
-  '鞍山':'101070301','赣州':'101240701','大庆':'101050901','宜昌':'101200901',
-  '包头':'101080201','咸阳':'101110200','秦皇岛':'101091101','株洲':'101250301',
-  '莆田':'101230401','吉林':'101060201','安庆':'101220801','宿州':'101221201',
-  '香港':'101320101','澳门':'101330101','台北':'101340101',
+  '新余':'101240801','香港':'101320101','澳门':'101330101','台北':'101340101'
 };
 
 class WeatherPlugin {
@@ -39,7 +33,7 @@ class WeatherPlugin {
     this._seen = new Set();
     this._bootDone = false;
     this._startWarnPoll();
-    console.log('[Weather] 🌤️ 天气插件已就绪 →', HOST);
+    console.log(`[Weather] 🌤️ 天气插件已就绪，HOST: ${HOST}`);
   }
 
   async handleMessage(msgData) {
@@ -49,56 +43,84 @@ class WeatherPlugin {
     const m = text.match(/(?:查)?天气\s*([^\s,，。！？!?]*)|([^\s,，。！？!?]*)\s*(?:的)?天气|weather\s*([^\s,，。！？!?]*)/i);
     if (!m) return null;
 
-    const cityName = (m[1] || m[2] || m[3] || '').trim();
+    let cityName = (m[1] || m[2] || m[3] || '').trim();
+    cityName = cityName.replace(/^(今天|明天|现在|查|帮我查查|看|一下|的|在)/g, '').replace(/的$/, '').replace(/[如何怎么样呢啊呀]/g, '').trim();
 
     try {
-      let brief;
-      if (!cityName) {
-        brief = await this.getBrief();
-      } else {
-        brief = await this.getBriefByCity(cityName);
+      let targetName = cityName || '默认城市';
+      let locationId = LOC;
+
+      if (cityName) {
+        // 优先查字典，没有再看 GeoAPI（防止 GeoAPI 报 403 阻塞正常查询）
+        if (CITY_MAP[cityName]) {
+          locationId = CITY_MAP[cityName];
+          console.log(`[Weather] 命中字典: ${cityName}`);
+        } else {
+          const geo = await this._fetchGeo(cityName);
+          if (geo) {
+            targetName = geo.name;
+            locationId = geo.id;
+          } else {
+            throw new Error(`找不到"${cityName}"，试试输入常用城市名`);
+          }
+        }
       }
-      const target = cityName || '这里';
-      return `主人，${target}现在的天气是：${brief} ☁️\n出门记得看情况增减衣物哦~`;
+
+      const [nowRes, h24Res, d3Res] = await Promise.all([
+        fetch(`${H}/weather/now?location=${locationId}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json()),
+        fetch(`${H}/weather/24h?location=${locationId}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json()),
+        fetch(`${H}/weather/3d?location=${locationId}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json())
+      ]);
+
+      if (nowRes.code !== '200') throw new Error(`天气数据接口异常: ${nowRes.code}`);
+
+      const now = nowRes.now;
+      let msg = `主人，${targetName}的天气为您播报 ☁️\n\n`;
+      msg += `🌤 实时：${now.text} ${now.temp}°C，体感${now.feelsLike}°C\n`;
+      msg += `${now.windDir}${now.windScale}级，湿度${now.humidity}%\n\n`;
+
+      if (h24Res.code === '200' && h24Res.hourly) {
+        msg += `⏱ 未来6小时：\n`;
+        h24Res.hourly.slice(0, 6).forEach(h => {
+          msg += `  ${h.fxTime.substring(11, 16)} ${h.text} ${h.temp}°C\n`;
+        });
+        msg += `\n`;
+      }
+
+      if (d3Res.code === '200' && d3Res.daily) {
+        msg += `📅 未来3天：\n`;
+        const days = ['今天', '明天', '后天'];
+        d3Res.daily.forEach((d, i) => {
+          msg += `  ${days[i] || d.fxDate}：${d.textDay}，${d.tempMin}~${d.tempMax}°C\n`;
+        });
+      }
+
+      return msg.trim();
     } catch (e) {
       console.error('[Weather] 查询失败:', e.message);
       return `呜...气象卫星失联了 (${e.message})，稍后再问我好不好？`;
     }
   }
 
-  async getBrief() {
-    if (!KEY || !LOC) throw new Error('未配置 QWEATHER_KEY / QWEATHER_LOCATION');
-    return this._fetchBrief(LOC);
-  }
-
-  async getBriefByCity(cityName) {
-    if (!KEY) throw new Error('未配置 QWEATHER_KEY');
-
-    // 策略1：直接把城市名塞进天气接口（部分 KEY 支持）
+  async _fetchGeo(cityName) {
+    const url = `${GEO_H}/city/lookup?location=${encodeURIComponent(cityName)}&key=${KEY}`;
     try {
-      return await this._fetchBrief(cityName);
-    } catch (e1) {
-      // 策略2：查内置城市表
-      const id = CITY_MAP[cityName];
-      if (id) return this._fetchBrief(id);
-      // 都不行
-      const hint = Object.keys(CITY_MAP).slice(0, 8).join('、');
-      throw new Error(`找不到"${cityName}"，试试这些：${hint}...`);
-    }
-  }
-
-  async _fetchBrief(location) {
-    const j = await fetch(`${H}/weather/now?location=${encodeURIComponent(location)}&key=${KEY}`).then(r => r.json());
-    if (j.code !== '200') throw new Error(`QWeather code=${j.code}`);
-    const n = j.now;
-    return `${n.text} ${n.temp}°C，体感${n.feelsLike}°C，${n.windDir}${n.windScale}级，湿度${n.humidity}%`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const text = await res.text();
+      if (res.status === 403) return null; // 直接兜底，不打日志了
+      const j = JSON.parse(text);
+      if (j.code === '200' && j.location && j.location.length > 0) {
+        return j.location[0];
+      }
+    } catch (e) {}
+    return null;
   }
 
   _startWarnPoll() {
     const poll = async () => {
       if (!KEY || !LOC) return;
       try {
-        const j = await fetch(`${H}/warning/now?location=${LOC}&key=${KEY}`).then(r => r.json());
+        const j = await fetch(`${H}/warning/now?location=${LOC}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json());
         for (const w of (j.warning || [])) {
           if (this._seen.has(w.id)) continue;
           this._seen.add(w.id);
