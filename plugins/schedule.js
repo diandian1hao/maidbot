@@ -1,6 +1,6 @@
-// plugins/schedule.js - 早午晚安 + 每日早报 + 记忆自动清理
+// plugins/schedule.js - 早午晚安 + 每日早报 + 记忆自动清理 (适配高密度天气数据版)
 const { chat } = require('../llm');
-const memory = require('../core/memory'); // ⭐ 新增：引入记忆模块用于清理
+const memory = require('../core/memory');
 
 class SchedulePlugin {
   constructor(bot) {
@@ -18,13 +18,16 @@ class SchedulePlugin {
     const T    = (k, d) => process.env[k] || d;
     const CITY = () => process.env.OWNER_CITY || '北京';
     
-    // ⭐ 新增 memory_clean 任务，默认凌晨 3 点执行
     const TASKS = [
-      { id: 'morning',     time: T('T_MORNING', '07:30'), p: w => `现在是早晨。向主人道早安，2-3句，自然带出今日${CITY()}天气：${w}` },
-      { id: 'daily',       time: T('T_DAILY',   '07:35'), p: w => `播报今日早报：日期、${CITY()}天气（${w}）、穿衣/带伞建议，结尾一句你标志性的话。不超过5句。` },
+      // 🆕 优化：早安提示词，直接吃透详细的 w 数据
+      { id: 'morning',     time: T('T_MORNING', '07:30'), p: w => `现在是早晨。向主人道早安，2-3句，自然带出今日天气情况：\n${w}` },
+      
+      // 🆕 优化：早报提示词，加入高密度天气解析和策略建议
+      { id: 'daily',       time: T('T_DAILY',   '07:35'), p: w => `播报今日早报。请结合以下详细天气数据：\n${w}\n要求：先概括日期和今天气温，接着给出穿衣、带伞或防晒建议，最后提一句明日天气趋势。语气保持傲娇女仆风。` },
+      
       { id: 'noon',        time: T('T_NOON',    '12:00'), p: () => '现在是中午。提醒主人吃饭休息，1-2句。' },
       { id: 'night',       time: T('T_NIGHT',   '22:30'), p: () => '现在是深夜。催主人早睡、道晚安，1-2句。' },
-      { id: 'memory_clean', time: T('T_CLEAN',   '03:00'), p: null }, // ⭐ 清理任务不需要 prompt
+      { id: 'memory_clean', time: T('T_CLEAN',   '03:00'), p: null },
     ];
 
     const FALLBACK = {
@@ -44,20 +47,16 @@ class SchedulePlugin {
         this._fired.add(t.id + day);
 
         (async () => {
-          // ⭐ 特殊处理：记忆清理任务
           if (t.id === 'memory_clean') {
             try {
-              // purgeExpired 返回被删除的条数
               const count = memory.purgeExpired(); 
               console.log(`[Schedule] 🧹 [${hm}] 记忆自动清理完成，删除 ${count} 条过期数据`);
             } catch (e) {
               console.error('[Schedule] ⚠️ 记忆清理失败:', e.message);
             }
-            return; // ⭐ 清理任务结束，不需要发推送
+            return;
           }
 
-          // --- 以下是原有聊天任务逻辑 ---
-          
           // 拿天气简报
           let w = '天气未获取';
           try {
