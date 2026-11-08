@@ -254,6 +254,16 @@ async function searchExperience(query, opts) {
     hits = rows.map(rowToExperience);
   }
 
+  // 🆕 W6: 在源头进行语义去重，防止相似问题霸屏
+  const uniqueHits = [];
+  for (const h of hits) {
+    const isDuplicate = uniqueHits.some(u => 
+      u.problem === h.problem || u.problem.includes(h.problem) || h.problem.includes(u.problem)
+    );
+    if (!isDuplicate) uniqueHits.push(h);
+  }
+  hits = uniqueHits.slice(0, topK);
+
   const latency = Date.now() - t0;
 
   try {
