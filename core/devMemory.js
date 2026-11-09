@@ -98,6 +98,9 @@ const stmt = {
   countEmbeddingPending: db.prepare("SELECT COUNT(*) AS c FROM dev_experience WHERE embedding_status = 'pending'"),
   searchFallbackNoType: db.prepare('SELECT * FROM dev_experience WHERE reusable = 1 ORDER BY adopted DESC, ts DESC LIMIT ?'),
   searchFallbackWithType: db.prepare('SELECT * FROM dev_experience WHERE reusable = 1 AND task_type = ? ORDER BY adopted DESC, ts DESC LIMIT ?'),
+  updateUsedCount: db.prepare('UPDATE dev_experience SET used_count = used_count + 1 WHERE id = ?'),
+  resetUsedTs: db.prepare('UPDATE dev_experience SET last_used_ts = ? WHERE id = ?'),
+  makePermanent: db.prepare('UPDATE dev_experience SET is_permanent = 1 WHERE id = ?'),
   insertSearchLog: db.prepare('INSERT INTO dev_search_log (ts, query, query_norm, top_k, hit_count, hit_ids, top_score, adopted_hit, source, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   countSearchLog: db.prepare('SELECT COUNT(*) AS c FROM dev_search_log'),
 };
@@ -277,7 +280,44 @@ async function searchExperience(query, opts) {
     logger.warn(`[DevMemory] search 埋点失败: ${e.message}`);
   }
 
+  // 🆕 记录这批经验被使用，并续命
+  const now = Date.now();
+  for (const h of hits) {
+    try { 
+      stmt.updateUsedCount.run(h.id); 
+      stmt.resetUsedTs.run(now, h.id);
+      
+      // 获取最新状态判定是否要永久保留
+      const row = stmt.getExperienceById.get(h.id);
+      if (row && row.used_count >= 6 && !row.is_permanent) {
+        stmt.makePermanent.run(h.id);
+        logger.info(`[DevMemory] 🌟 L1 id=${h.id} 使用满 6 次，晋升为永久经验！`);
+      }
+    } catch (e) {
+      logger.warn(`[DevMemory] search 命中状态更新失败: ${e.message}`);
+    }
+  }
   return hits;
+}
+
+// 🆕 淘汰机制：基于最后活跃时间，淘汰常年不被使用的经验
+function deprecateStale(days = 365) {
+  const cutoff = Date.now() - days * 24 * 3600 * 1000;
+  const info = db.prepare(
+    'UPDATE dev_experience SET reusable = 0 WHERE (is_permanent = 0 OR is_permanent IS NULL) AND adopted = 0 AND last_used_ts < ? AND reusable = 1'
+  ).run(cutoff);
+  
+  if (info.changes > 0) {
+    logger.info(`[DevMemory] 🧹 淘汰了 ${info.changes} 条超过 ${days} 天未活跃的冷数据经验 (已软删除)`);
+  }
+  return info.changes;
+}
+
+// 🆕 恢复误删的经验
+function restoreExperience(id) {
+  const info = db.prepare('UPDATE dev_experience SET reusable = 1 WHERE id = ?').run(id);
+  if (info.changes > 0) logger.info(`[DevMemory] ♻️ 恢复了 L1 经验 id=${id}`);
+  return info.changes;
 }
 
 // ==================== 统计 ====================
@@ -309,6 +349,6 @@ module.exports = {
   updateEventOutcome, adoptEvent, getEventById,
   writeExperience, getExperienceById, updateEmbeddingStatus, adoptExperience,
   syncExperienceToVector, searchExperience,
-  stats, selfCheck,
+  stats, selfCheck, deprecateStale, restoreExperience,
   _raw: db, _stmt: stmt,
 };

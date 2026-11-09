@@ -281,6 +281,11 @@ setInterval(() => {
 // ====== W3: 30 分钟定时蒸馏 L0 -> L1 ======
 setInterval(() => {
   devDistiller.distillPending(10).catch(e => logger.error('[DevDistiller] 定时任务失败: ' + e.message));
+
+// 🆕 每 2 小时检查一次高频经验，向上蒸馏 L2
+setInterval(() => {
+  require('./core/patternDistiller').checkAndDistillL2().catch(e => console.error(e));
+}, 2 * 60 * 60 * 1000).unref();
 }, 30 * 60 * 1000).unref();
 
 // ====== 启动 ======
