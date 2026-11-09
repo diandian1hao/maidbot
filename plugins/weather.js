@@ -1,11 +1,11 @@
-// plugins/weather.js - 天气数据源 + 灾害预警 + 详细播报（字典兜底版）
+// plugins/weather.js - 终极整合版（QQ详细播报 + 早报高密度简报 + 预警）
 const KEY = process.env.QWEATHER_KEY;
 const LOC = process.env.QWEATHER_LOCATION;
 const HOST = (process.env.QWEATHER_HOST || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
 const H = `https://${HOST}/v7`;
 const GEO_H = `https://${HOST}/geo/v2`;
 
-// 内置城市字典，防止 GeoAPI 权限失效导致无法查询
+// 内置城市字典，防止 GeoAPI 权限失效
 const CITY_MAP = {
   '北京':'101010100','上海':'101020100','广州':'101280101','深圳':'101280601',
   '成都':'101270101','杭州':'101210101','武汉':'101200101','西安':'101110101',
@@ -33,9 +33,10 @@ class WeatherPlugin {
     this._seen = new Set();
     this._bootDone = false;
     this._startWarnPoll();
-    console.log(`[Weather] 🌤️ 天气插件已就绪，HOST: ${HOST}`);
+    console.log(`[Weather] 🌤️ 天气插件已就绪，HOST: ${HOST || '未配置'}`);
   }
 
+  // ================= 1. 处理 QQ 聊天消息 =================
   async handleMessage(msgData) {
     const text = (msgData?.content || '').trim();
     if (!text) return null;
@@ -51,10 +52,8 @@ class WeatherPlugin {
       let locationId = LOC;
 
       if (cityName) {
-        // 优先查字典，没有再看 GeoAPI（防止 GeoAPI 报 403 阻塞正常查询）
         if (CITY_MAP[cityName]) {
           locationId = CITY_MAP[cityName];
-          console.log(`[Weather] 命中字典: ${cityName}`);
         } else {
           const geo = await this._fetchGeo(cityName);
           if (geo) {
@@ -67,12 +66,12 @@ class WeatherPlugin {
       }
 
       const [nowRes, h24Res, d3Res] = await Promise.all([
-        fetch(`${H}/weather/now?location=${locationId}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json()),
-        fetch(`${H}/weather/24h?location=${locationId}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json()),
-        fetch(`${H}/weather/3d?location=${locationId}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json())
+        this._fetchWeather('now', locationId),
+        this._fetchWeather('24h', locationId),
+        this._fetchWeather('3d', locationId)
       ]);
 
-      if (nowRes.code !== '200') throw new Error(`天气数据接口异常: ${nowRes.code}`);
+      if (nowRes.code !== '200') throw new Error(`天气接口异常: ${nowRes.code}`);
 
       const now = nowRes.now;
       let msg = `主人，${targetName}的天气为您播报 ☁️\n\n`;
@@ -97,17 +96,71 @@ class WeatherPlugin {
 
       return msg.trim();
     } catch (e) {
-      console.error('[Weather] 查询失败:', e.message);
+      console.error('[Weather] 聊天查询失败:', e.message);
       return `呜...气象卫星失联了 (${e.message})，稍后再问我好不好？`;
     }
   }
 
+  // ================= 2. 供早报调用的接口 =================
+  async getBrief() {
+    return this.getBriefByCity(null);
+  }
+
+  async getBriefByCity(cityName) {
+    let locationId = LOC;
+    let targetName = cityName || '默认城市';
+
+    if (cityName) {
+      if (CITY_MAP[cityName]) {
+        locationId = CITY_MAP[cityName];
+      } else {
+        const geo = await this._fetchGeo(cityName);
+        if (geo) {
+          targetName = geo.name;
+          locationId = geo.id;
+        }
+      }
+    }
+
+    try {
+      const [nowRes, d3Res] = await Promise.all([
+        this._fetchWeather('now', locationId),
+        this._fetchWeather('3d', locationId)
+      ]);
+
+      if (nowRes.code !== '200') throw new Error('天气接口异常');
+      
+      const now = nowRes.now;
+      let brief = `【实时】${now.text} ${now.temp}°C，体感${now.feelsLike}°C，${now.windDir}${now.windScale}级，湿度${now.humidity}%。\n`;
+      
+      if (d3Res.code === '200' && d3Res.daily && d3Res.daily.length >= 2) {
+        const today = d3Res.daily[0];
+        const tomorrow = d3Res.daily[1];
+        brief += `【今日】白天${today.textDay}，夜间${today.textNight}，气温${today.tempMin}~${today.tempMax}°C。\n`;
+        brief += `【明日】${tomorrow.textDay}，气温${tomorrow.tempMin}~${tomorrow.tempMax}°C。`;
+      }
+      
+      return brief;
+    } catch (e) {
+      console.error('[Weather] 早报接口失败:', e.message);
+      return '暂无法获取详细天气信息';
+    }
+  }
+
+  // ================= 3. 内部工具 =================
+  async _fetchWeather(endpoint, locationId) {
+    if (!HOST || !KEY) return { code: '401' };
+    const url = `${H}/weather/${endpoint}?location=${locationId}&key=${KEY}`;
+    return fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json());
+  }
+
   async _fetchGeo(cityName) {
+    if (!HOST || !KEY) return null;
     const url = `${GEO_H}/city/lookup?location=${encodeURIComponent(cityName)}&key=${KEY}`;
     try {
       const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
       const text = await res.text();
-      if (res.status === 403) return null; // 直接兜底，不打日志了
+      if (res.status === 403) return null;
       const j = JSON.parse(text);
       if (j.code === '200' && j.location && j.location.length > 0) {
         return j.location[0];
@@ -118,9 +171,9 @@ class WeatherPlugin {
 
   _startWarnPoll() {
     const poll = async () => {
-      if (!KEY || !LOC) return;
+      if (!KEY || !LOC || !HOST) return;
       try {
-        const j = await fetch(`${H}/warning/now?location=${LOC}&key=${KEY}`, { headers: { 'User-Agent': 'Mozilla/5.0' } }).then(r => r.json());
+        const j = await this._fetchWeather('warning/now', LOC);
         for (const w of (j.warning || [])) {
           if (this._seen.has(w.id)) continue;
           this._seen.add(w.id);
@@ -131,7 +184,7 @@ class WeatherPlugin {
           } catch (e) { console.error('[Weather] 预警推送失败:', e.message); }
         }
         this._bootDone = true;
-      } catch (e) { /* 网络抖动跳过本轮 */ }
+      } catch (e) {}
     };
     poll();
     this._timer = setInterval(poll, 30 * 60 * 1000);
