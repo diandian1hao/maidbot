@@ -198,6 +198,10 @@ class WebServerPlugin {
     app.set('trust proxy', 1);
     app.use(express.json());
 
+    // 🆕 开放 dev-output 目录为静态文件服务，方便 QQ 端直接打开 MD 文件
+    const devOutputPath = path.join(__dirname, '../logs/dev-output');
+    app.use('/dev-files', express.static(devOutputPath));
+
     app.get('/api/status', (req, res) => {
       res.json({ remaining: getRemaining(req.ip), globalRemaining: getGlobalRemaining() });
     });

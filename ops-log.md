@@ -507,3 +507,36 @@ W5 接入 QQ 后，**真正打破了“时间与空间”的物理限制**。
 ### 三、战略确认
 - 明确“单体版优先，多租户 SaaS 延后”的路线。W7 的单体架构已具备极高的工程完成度。
 - 明年新开服务器重构时，这 42 条（且还在不断进化）的经验库可以直接通过 JSON 导入新架构，数据资产安全无损。
+
+## W8 Day 1 开发日志（2026-11-09）：多项目架构与联邦记忆大更新
+
+### 一、核心架构演进
+1. **多项目空间（Workspace）与黑板机制**
+   - 引入 `dev_sessions` 表，实现 `user_id` 维度的多项目隔离。
+   - 解决大模型 Context Window 瓶颈：黑板（`last_code`）只存当前正在修改的代码，发 `/dev done` 自动归档清空，用动态黑板代替无限历史。
+2. **L3 项目宪法（ADR）**
+   - 引入 `dev_project_context` 表，支持通过 `/dev adr <文字>` 记录长线架构决策（如：技术栈、设计规范）。
+   - 这些宪法在每次生成时强制注入 System Prompt，解决大型项目拆分后宏观架构被 L1 经验淹没的问题。
+3. **联邦式记忆模型（Global/Group/Project）**
+   - `dev_events` 和 `dev_experience` 新增 `group_name` 字段，支持 `组名/项目名` 的命名空间。
+   - `devPipeline` 实现三级检索加权：当前项目经验权重 x1.5，同组项目 x1.2，全局公海 x1.0。彻底实现组内技术复用与跨组污染隔离。
+
+### 二、体验与交互优化
+1. **Web 端代码全量预览**
+   - 在 `web-server.plugin.js` 中利用 `express.static` 挂载了 `logs/dev-output`。
+   - QQ 端截断至 400 字，同时附带公网可访问的 `.md` 网页链接，实现“手机看代码、全量不丢失”。
+2. **意图路由与防污染**
+   - `devPipeline` 引入意图判定：若用户是在“报错/修改”且携带了上下文，直接跳过 L1 向量检索，避免不相干经验污染当前上下文。
+   - 引入严格阈值过滤（`score > 0.45`），并优化 System Prompt 允许大模型直接忽略无关经验。
+3. **交互面板与树状指令**
+   - 重构 QQ `/dev` 响应面板，将平铺列表改为“组概览 -> 下钻项目”的树状结构。
+   - 新增 `modelProvider` 审查模型降级锁：若 GLM 失败，强制降级 Qwen，绝不允许降级回 DeepSeek 导致“同模型自审”。
+
+### 三、踩坑与排错记录（重要教训）
+1. **Bash 历史扩展截断**：在使用 `node -e "..."` 时，JS 代码中的 `!` 被 Bash 当作历史命令扩展引发语法错误，后续改用单引号包裹代码或避开 `!`。
+2. **静默失败导致 undefined 崩溃**：在修改 `devMemory.js` 时，因为之前的锚点（`insertSearchLog`）已被移走，Python 脚本在插入 `stmt.listGroups` 时静默失败，导致函数本体存在但预编译语句缺失，插件报 `Cannot read properties of undefined (reading 'all')` 并导致进程无限重启。
+3. **PM2 僵尸进程**：崩溃期间 PM2 缓存了死进程，重启报 `pid already exists`，需使用 `pm2 delete maidbot` 再 `pm2 start ecosystem.config.js` 解决。
+
+### 四、明日计划（W8 Day 2）
+- 在本地 IDE (Cursor/Postman) 配通公网 API 网关，进行真实跨端开发。
+- 梳理并输出 `ARCHITECTURE.md` 架构设计图纸，为年终验收做准备。

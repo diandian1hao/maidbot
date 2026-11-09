@@ -56,11 +56,22 @@ async function distillPending(limit = 10) {
         continue;
       }
 
+      // 🆕 如果是 failed 类型，给 solution 加上“避坑”前缀
+      let finalSolution = parsed.solution;
+      if (ev.outcome === 'failed') {
+        finalSolution = `【避坑指南】${finalSolution}`;
+      }
+
+      // 🆕 归属判定：AI 可以返回 is_global=true 表示这是跨项目通用经验
+      const expProject = parsed.is_global ? 'global' : (ev.project_name || 'global');
+
       const exp = dm.writeExperience({
         sourceEventId: ev.id,
+        groupName: ev.group_name || 'common', // 🆕 继承组
+        projectName: expProject,              // 继承项目或提纯为全局
         taskType: parsed.task_type || ev.task_type || 'note',
         problem: parsed.problem,
-        solution: parsed.solution,
+        solution: finalSolution,
         filesTouched: parsed.files_touched || ev.files_touched || [],
       });
 

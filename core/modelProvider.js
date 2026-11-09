@@ -16,7 +16,7 @@ const PROVIDERS = {
     baseUrl: process.env.GLM_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4',
     apiKey:  process.env.GLM_API_KEY,
     defaultModel: process.env.GLM_MODEL || 'glm-4-flash',
-    timeout: 15000,
+    timeout: 30000,
     enabled: true,
   },
   qwen: {
@@ -46,7 +46,13 @@ const TASK_ROUTER = {
 async function route(taskType, messages, opts = {}) {
   const primary = opts.provider || TASK_ROUTER[taskType] || 'deepseek';
   const tried = [];  // 只记录「真正发起过请求」的 provider
-  const chain = [primary, ...['glm', 'deepseek', 'qwen'].filter(n => n !== primary)];
+  // 🆕 如果是审查任务，强制只能降级到 GLM 或 Qwen（绝对不能降级到生成模型）
+  let chain;
+  if (taskType === 'review_code') {
+    chain = ['glm', 'qwen']; 
+  } else {
+    chain = [primary, ...['glm', 'deepseek', 'qwen'].filter(n => n !== primary)];
+  }
 
   for (const name of chain) {
     if (tried.length >= 2) break;  // 最多真实请求 2 个 provider
