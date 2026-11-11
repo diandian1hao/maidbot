@@ -52,16 +52,12 @@ class WebServerPlugin {
     app.set('trust proxy', 1);
     app.use(express.json());
 
-    // ✅ 静态文件托管配置（核心：恢复 /dev.html 访问）
     const publicPath = path.join(__dirname, '../public');
     app.use(express.static(publicPath));
     app.use('/dev-files', express.static(path.join(__dirname, '../logs/dev-output')));
-
-    // 路由重定向与图标处理
     app.get('/dev', (req, res) => res.redirect('/dev.html'));
     app.get('/favicon.ico', (req, res) => res.status(204).end());
 
-    // ================= 原有普通 Web 功能 =================
     app.get('/api/status', (req, res) => {
       res.json({ remaining: getRemaining(req.ip), globalRemaining: getGlobalRemaining() });
     });
@@ -113,13 +109,9 @@ class WebServerPlugin {
       res.send(`<!DOCTYPE html><html><body><h2>MaidBot Web 运行中</h2><p>请访问 <a href="/dev.html">/dev.html</a> 进入控制台</p></body></html>`);
     });
 
-    // ================= 🆕 开发者 API =================
     app.get('/api/dev/projects', (req, res) => {
       try {
-        const projects = dm._raw.prepare(`
-          SELECT project_name, group_name, is_active, status, updated_at, length(last_code) as code_len 
-          FROM dev_sessions WHERE user_id = ? ORDER BY updated_at DESC
-        `).all(DEV_USER_ID);
+        const projects = dm.listUserProjects(DEV_USER_ID);
         res.json({ success: true, projects });
       } catch (e) { res.status(500).json({ success: false, error: e.message }); }
     });
@@ -151,11 +143,18 @@ class WebServerPlugin {
       if (!query) return res.status(400).json({ success: false, error: '缺少 query' });
 
       try {
-        let finalQuery = query.replace(/^\/dev\s*/, '');
+        let finalQuery = query.trim();
 
-        // 🆕 强行拦截 note 指令，静默沉淀
-        if (finalQuery.startsWith('note ')) {
-          const noteContent = finalQuery.slice(5).trim();
+        if (finalQuery === '/dev status' || finalQuery === 'status') {
+          const active = dm.getActiveSession(DEV_USER_ID);
+          if (!active) return res.json({ success: false, error: '请先锁定项目组' });
+          const stats = dm.stats();
+          const reply = `📊 **当前系统状态**\n\n- 当前锁定: [${active.group_name}] ${active.project_name}\n- 黑板代码量: ${active.last_code ? active.last_code.length : 0} 字符\n- 全局 L1 经验库: ${stats.experience} 条\n- 累计蒸馏次数: ${stats.distilled} 次`;
+          return res.json({ success: true, reply, provider: 'system', reviewer: 'none', latency: 0 });
+        }
+
+        if (finalQuery.startsWith('/dev note ') || finalQuery.startsWith('note ')) {
+          const noteContent = finalQuery.replace(/^(\/dev\s+)?note\s+/, '').trim();
           const active = dm.getActiveSession(DEV_USER_ID);
           if (!active) return res.json({ success: false, error: '请先锁定一个项目组' });
           
@@ -171,26 +170,37 @@ class WebServerPlugin {
           return res.json({ success: true, reply: `✅ 笔记已静默写入 L0 原始库。\n系统将在 30 分钟内自动将其蒸馏为 L1 经验。`, provider: 'system', reviewer: 'none', latency: 0 });
         }
 
-        // 🆕 强行拦截 status 指令
-        if (finalQuery === 'status') {
-          const active = dm.getActiveSession(DEV_USER_ID);
-          if (!active) return res.json({ success: false, error: '请先锁定项目组' });
-          const stats = dm.stats();
-          const reply = `📊 **当前系统状态**\n\n- 当前锁定: [${active.group_name}] ${active.project_name}\n- 黑板代码量: ${active.last_code ? active.last_code.length : 0} 字符\n- 全局 L1 经验库: ${stats.experience} 条\n- 累计蒸馏次数: ${stats.distilled} 次`;
-          return res.json({ success: true, reply, provider: 'system', reviewer: 'none', latency: 0 });
-        }
-
-        if (finalQuery.startsWith('use ')) {
-          const targetProject = finalQuery.slice(4).trim();
+        // 🆕 核心修复：切换后暴力纠正返回的 is_active 状态
+        if (finalQuery.startsWith('/dev use ') || finalQuery.startsWith('use ')) {
+          const targetProject = finalQuery.replace(/^(\/dev\s+)?use\s+/, '').trim();
           dm.switchProjectWorkspace(DEV_USER_ID, targetProject);
-          return res.json({ success: true, reply: `✅ 已锁定项目空间: [${targetProject}]`, provider: 'system', reviewer: 'none', latency: 0 });
+          
+          const active = dm.getActiveSession(DEV_USER_ID);
+          const realLockName = active ? `${active.group_name}/${active.project_name}` : targetProject;
+          const realGroup = active ? active.group_name : 'common';
+          const realProj = active ? active.project_name : targetProject;
+          
+          const projects = dm.listUserProjects(DEV_USER_ID);
+          
+          // 暴力纠正：绝对保证只有一个 active
+          projects.forEach(p => {
+             p.is_active = (p.group_name === realGroup && p.project_name === realProj) ? 1 : 0;
+          });
+
+          return res.json({ 
+            success: true, 
+            reply: `✅ 已锁定项目空间: [${realLockName}]`, 
+            projects,
+            provider: 'system', reviewer: 'none', latency: 0 
+          });
         }
         
-        if (finalQuery === 'done') {
+        if (finalQuery === '/dev done' || finalQuery === 'done') {
           const active = dm.getActiveSession(DEV_USER_ID);
           if (active) {
             dm.markProjectDone(DEV_USER_ID, active.project_name);
-            return res.json({ success: true, reply: `✅ 项目 [${active.project_name}] 已归档，黑板已清空，经验已送入蒸馏队列。`, provider: 'system', reviewer: 'none', latency: 0 });
+            const projects = dm.listUserProjects(DEV_USER_ID);
+            return res.json({ success: true, reply: `✅ 项目 [${active.project_name}] 已归档，黑板已清空，经验已送入蒸馏队列。`, projects, provider: 'system', reviewer: 'none', latency: 0 });
           }
           return res.json({ success: true, reply: `当前没有活跃项目。`, provider: 'system', reviewer: 'none', latency: 0 });
         }

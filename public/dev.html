@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>MaidBot Dev Console</title>
-<!-- 换用极其稳定的 cdnjs 源 -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -46,8 +45,13 @@ h1{font-size:18px;color:var(--primary);display:flex;align-items:center;gap:8px}
 .status-badge.locked{background:#10b981;color:#0f172a;}
 .drag-over{border:2px dashed var(--primary)!important;background:rgba(16,185,129,0.1)!important;}
 
-.sidebar-bottom{padding:16px;border-top:1px solid var(--border);background:#0f172a;font-size:12px;color:#94a3b8;line-height:1.8;}
-.sidebar-bottom b{color:#e2e8f0;}
+/* 🆕 重新设计的操作手册样式 */
+.sidebar-bottom{padding:16px;border-top:1px solid var(--border);background:#0f172a;font-size:12px;color:#94a3b8;}
+.manual-title{color:#e2e8f0; font-weight:bold; margin-bottom:8px; font-size:13px; display:flex; align-items:center; gap:6px;}
+.manual-row{display:flex; justify-content:space-between; margin-bottom:6px;}
+.manual-cmd{background:#1e293b; padding:2px 6px; border-radius:4px;font-family:ui-monospace,monospace; color:#10b981; font-size:11px;}
+.manual-desc{color:#cbd5e1;}
+.divider{height:1px; background:#334155; margin:10px 0;}
 
 .chat-area{flex:1;display:flex;flex-direction:column;background:var(--bg)}
 .blackboard-info{background:#1e293b;padding:8px 20px;font-size:12px;color:#94a3b8;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)}
@@ -56,7 +60,7 @@ h1{font-size:18px;color:var(--primary);display:flex;align-items:center;gap:8px}
 .msg.user{align-self:flex-end}
 .msg.ai{align-self:flex-start}
 .msg-content{padding:12px 16px;border-radius:8px;font-size:14px;line-height:1.6;word-break:break-word;}
-.msg.user .msg-content{background:#3b82f6;color:white;border-bottom-right-radius:2px;white-space:pre-wrap;}
+.msg.user .msg-content{background:#3b82f6;color:white;border-bottom-right-radius:2px;white-space:pre-wrap;} /* 保留用户换行 */
 .msg.ai .msg-content{background:var(--panel);border:1px solid var(--border);border-bottom-left-radius:2px;}
 .msg.ai .msg-content p { margin-bottom: 8px; }
 .msg.ai .msg-content pre { background: #282c34; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; position: relative;}
@@ -68,10 +72,24 @@ h1{font-size:18px;color:var(--primary);display:flex;align-items:center;gap:8px}
 .quick-cmd-bar { display: flex; gap: 8px; }
 .quick-cmd { background: #334155; color: #cbd5e1; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: 0.2s;}
 .quick-cmd:hover { background: #475569; color: white; }
-.input-row { display: flex; gap: 12px; }
-input.chat-input{flex:1;background:#0f172a;border:1px solid var(--border);padding:12px 16px;border-radius:8px;color:white;outline:none;font-family:inherit}
-input.chat-input:focus{border-color:var(--primary)}
-button.send-btn{background:var(--primary);color:white;border:none;padding:12px 24px;border-radius:8px;cursor:pointer;font-weight:bold}
+
+/* 🆕 调整了 input-row 的对齐方式，让多行文本框与按钮底部对齐 */
+.input-row { display: flex; gap: 12px; align-items: flex-end; }
+
+/* 🆕 将 input 替换为 textarea 样式，支持多行、滚动条、自适应高度 */
+textarea.chat-input{
+  flex:1; background:#0f172a; border:1px solid var(--border); padding:12px 16px; border-radius:8px; color:white; outline:none; font-family:inherit; font-size:14px;
+  resize:none; line-height:1.5; min-height:48px; max-height:200px; overflow-y:auto;
+}
+textarea.chat-input:focus{ border-color:var(--primary); }
+/* 自定义滚动条样式 */
+textarea.chat-input::-webkit-scrollbar { width: 8px; }
+textarea.chat-input::-webkit-scrollbar-track { background: transparent; }
+textarea.chat-input::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+textarea.chat-input::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+button.send-btn{background:var(--primary);color:white;border:none;padding:0 24px;border-radius:8px;cursor:pointer;font-weight:bold; height:48px; min-height:48px; transition: 0.2s;}
+button.send-btn:hover{ background:#059669; }
 button.done-btn{background:#f59e0b;color:#0f172a;border:none;padding:12px 24px;border-radius:8px;cursor:pointer;font-weight:bold}
 button:disabled{opacity:0.5;cursor:not-allowed}
 
@@ -95,15 +113,39 @@ pre:hover .copy-btn { opacity: 1; }
       <button style="width:100%; padding:8px;" onclick="createProject()">新建并锁定</button>
     </div>
     <div class="sidebar-scroll" id="project-tree">加载中...</div>
+    
     <div class="sidebar-bottom">
-      <b>💡 操作手册：</b><br>
-      • <b>新建：</b>输入组名和项目名<br>
-      • <b>切换：</b>点击项目名称<br>
-      • <b>折叠：</b>点击项目组名<br>
-      • <b>开发：</b>底部输入框发需求<br>
-      • <b>归档：</b>点击“归档蒸馏”
+      <div class="manual-title">📖 操作与指令手册 (Web端免 /dev)</div>
+      
+      <div class="manual-row">
+        <span class="manual-cmd">直接打字</span>
+        <span class="manual-desc">开启 AI 代码生成与审查</span>
+      </div>
+      <div class="manual-row">
+        <span class="manual-cmd">note &lt;文字&gt;</span>
+        <span class="manual-desc">静默沉淀笔记，不耗算力</span>
+      </div>
+      <div class="manual-row">
+        <span class="manual-cmd">status</span>
+        <span class="manual-desc">秒级查看当前黑板与库状态</span>
+      </div>
+      <div class="manual-row">
+        <span class="manual-cmd">done</span>
+        <span class="manual-desc">归档当前项目并触发蒸馏</span>
+      </div>
+      <div class="manual-row">
+        <span class="manual-cmd">use &lt;组/项目&gt;</span>
+        <span class="manual-desc">强制用指令切换空间</span>
+      </div>
+      
+      <div class="divider"></div>
+      <div style="font-size:11px; color:#64748b;">
+        💡 按 <b>Shift + Enter</b> 换行输入长代码。<br>
+        🔒 点击左侧项目切换，点击组名折叠。
+      </div>
     </div>
   </div>
+  
   <div class="chat-area">
     <div class="blackboard-info" id="blackboard-bar" style="display:none;">
       <span>当前锁定: <b id="current-project-name" style="color:#10b981;"></b></span>
@@ -118,7 +160,8 @@ pre:hover .copy-btn { opacity: 1; }
         <button class="quick-cmd" onclick="archiveProject()">📦 归档蒸馏</button>
       </div>
       <div class="input-row">
-        <input class="chat-input" id="input" type="text" placeholder="请先在左侧选择或创建项目组" autocomplete="off" disabled>
+        <!-- 🆕 升级为 textarea，支持多行 -->
+        <textarea class="chat-input" id="input" rows="1" placeholder="直接输入开发需求，按 Enter 发送，Shift + Enter 换行..." autocomplete="off" disabled></textarea>
         <button class="send-btn" id="send" disabled>发送</button>
       </div>
     </div>
