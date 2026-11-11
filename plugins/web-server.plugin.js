@@ -4,9 +4,13 @@ const repo = require('../core/memoryRepository');
 const llm = require('../llm');
 const logger = require('../utils/logger');
 const pipeline = require('../core/pipeline');
-const metrics = require('../metrics');   // 🆕 复用主控插件责任链
+const metrics = require('../metrics');
+const { devChat } = require('../core/devPipeline');
+const dm = require('../core/devMemory');
 
-// ====== 应用层流控：个人 10 次/天 + 全站 100 次/天 ======
+const DEV_USER_ID = '0E612530550ECF682BC85A53FA8C12D3';
+
+// ====== 应用层流控 ======
 const rateLimitMap = new Map();
 const DAILY_LIMIT = 10;
 const GLOBAL_DAILY_LIMIT = 100;
@@ -30,167 +34,17 @@ const getGlobalRecord = () => {
 const getGlobalRemaining = () => Math.max(0, GLOBAL_DAILY_LIMIT - getGlobalRecord().count);
 
 const dailyRateLimiter = (req, res, next) => {
-  if (getRecord(req.ip).count >= DAILY_LIMIT) {
-    return res.status(429).json({ error: '今日个人额度已耗尽（10 次/天）', remaining: 0 });
-  }
-  if (getGlobalRecord().count >= GLOBAL_DAILY_LIMIT) {
-    return res.status(429).json({ error: '今日全站额度已耗尽（100 次/天）', remaining: 0, global: true });
-  }
+  if (getRecord(req.ip).count >= DAILY_LIMIT) return res.status(429).json({ error: '今日个人额度已耗尽（10 次/天）', remaining: 0 });
+  if (getGlobalRecord().count >= GLOBAL_DAILY_LIMIT) return res.status(429).json({ error: '今日全站额度已耗尽（100 次/天）', remaining: 0, global: true });
   next();
 };
-
-// ====== 内嵌 HTML（原生 JS，零外部 CDN 依赖）======
-const buildHTML = (remaining) => `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>MaidBot Web</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#111827;color:#f3f4f6;font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column;align-items:center}
-.wrap{width:100%;max-width:768px;height:100%;display:flex;flex-direction:column;padding:16px}
-header{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #374151;margin-bottom:16px}
-h1{font-size:20px;color:#4ade80}
-.badge{background:#1f2937;border:1px solid #4b5563;border-radius:999px;padding:4px 12px;font-size:13px}
-.badge b{font-family:ui-monospace,Consolas,monospace;color:#60a5fa}
-.badge b.zero{color:#f87171}
-#chat-box{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding-right:6px;scrollbar-width:none}
-#chat-box::-webkit-scrollbar{display:none}
-.row{display:flex;gap:10px}
-.row.user{flex-direction:row-reverse}
-.avatar{width:32px;height:32px;border-radius:50%;background:#16a34a;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
-.row.user .avatar{background:#2563eb}
-.bubble{background:#1f2937;padding:10px 14px;border-radius:16px;border-top-left-radius:4px;max-width:80%;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
-.row.user .bubble{background:#1e3a8a;border-radius:16px;border-top-right-radius:4px}
-.meta{font-size:11px;color:#6b7280;margin:-8px 0 0 42px}
-.inputbar{margin-top:14px;display:flex;gap:8px}
-#input{flex:1;background:#1f2937;border:1px solid #374151;border-radius:10px;padding:12px 14px;color:#e5e7eb;font-size:14px;outline:none}
-#input:focus{border-color:#22c55e}
-#input:disabled,#send:disabled{opacity:.5;cursor:not-allowed}
-#send{background:#16a34a;color:#fff;border:none;border-radius:10px;padding:10px 22px;font-size:14px;font-weight:700;cursor:pointer}
-#send:hover:not(:disabled){background:#15803d}
-footer{font-size:12px;color:#6b7280;margin-top:8px;text-align:center}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <header>
-    <h1>🤖 MaidBot Web</h1>
-    <div class="badge">剩余: <b id="remaining">-</b>/10</div>
-  </header>
-  <div id="chat-box">
-    <div class="row"><div class="avatar">AI</div><div class="bubble">你好！我是 MaidBot，每日限制 10 条对话。</div></div>
-  </div>
-  <div class="inputbar">
-    <input id="input" type="text" placeholder="输入消息..." autocomplete="off">
-    <button id="send">发送</button>
-  </div>
-  <footer id="foot">MaidBot Plugin Architecture | Daily Limit Enabled</footer>
-</div>
-<script>
-(function(){
-  var remaining = ${remaining};
-  var isSending = false;
-  var box = document.getElementById('chat-box');
-  var input = document.getElementById('input');
-  var btn = document.getElementById('send');
-  var remEl = document.getElementById('remaining');
-  var foot = document.getElementById('foot');
-  function scroll(){ box.scrollTop = box.scrollHeight; }
-  function refreshFooter(){
-    fetch('/api/status').then(function(r){ return r.json(); }).then(function(d){
-      if (typeof d.remaining === 'number') { remaining = d.remaining; remEl.textContent = remaining; remEl.className = (remaining > 0 ? '' : 'zero'); }
-      if (typeof d.globalRemaining === 'number') {
-        foot.textContent = 'MaidBot Plugin Architecture | 个人 10 次/天 · 全站剩余 ' + d.globalRemaining + '/100';
-      }
-      var dis = isSending || remaining <= 0;
-      input.disabled = dis; btn.disabled = dis || !input.value.trim();
-    }).catch(function(){});
-  }
-  function refresh(){
-    remEl.textContent = remaining;
-    remEl.className = (remaining > 0 ? '' : 'zero');
-    var dis = isSending || remaining <= 0;
-    input.disabled = dis;
-    btn.disabled = dis || !input.value.trim();
-  }
-  function addRow(role, text){
-    var row = document.createElement('div'); row.className = 'row' + (role === 'user' ? ' user' : '');
-    var av = document.createElement('div'); av.className = 'avatar'; av.textContent = (role === 'user' ? '我' : 'AI');
-    var b = document.createElement('div'); b.className = 'bubble'; b.textContent = text;
-    row.appendChild(av); row.appendChild(b); box.appendChild(row); scroll();
-    return b;
-  }
-  function addMeta(text){
-    var m = document.createElement('div'); m.className = 'meta'; m.textContent = text;
-    box.appendChild(m); scroll();
-  }
-  async function send(){
-    var t = input.value.trim();
-    if (!t || isSending || remaining <= 0) return;
-    addRow('user', t); input.value = ''; isSending = true; btn.textContent = '发送中...'; refresh();
-    var bubble = addRow('ai', '');
-    var pluginName = null;
-    try {
-      var r = await fetch('/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message: t }) });
-      if (r.status === 429) {
-        var d429 = await r.json().catch(function(){ return {}; });
-        remaining = 0; refresh();
-        bubble.textContent = '🚫 ' + (d429.error || '今日额度已耗尽');
-        refreshFooter();
-        return;
-      }
-      if (!r.ok || !r.body) { bubble.textContent = '❌ 服务器错误 (' + r.status + ')'; return; }
-      var reader = r.body.getReader(); var dec = new TextDecoder('utf-8'); var buf = '';
-      while (true) {
-        var chunk = await reader.read(); if (chunk.done) break;
-        buf += dec.decode(chunk.value, { stream: true });
-        var events = buf.split('\\n\\n'); buf = events.pop() || '';
-        for (var i = 0; i < events.length; i++) {
-          var lines = events[i].split('\\n');
-          for (var j = 0; j < lines.length; j++) {
-            if (lines[j].indexOf('data: ') !== 0) continue;
-            var payload = lines[j].slice(6).trim();
-            if (payload === '[DONE]') continue;
-            try {
-              var p = JSON.parse(payload);
-              if (p.text) { bubble.textContent += p.text; scroll(); }
-              if (p.meta) { pluginName = String(p.meta).replace(/^plugin:/, ''); }
-              if (p.error) { bubble.textContent += '\\n⚠️ ' + p.error; }
-            } catch (e) {}
-          }
-        }
-      }
-      if (!bubble.textContent) bubble.textContent = '（没有插件或模型响应）';
-      if (pluginName) addMeta('⚙️ 由插件「' + pluginName + '」响应');
-      remaining = Math.max(0, remaining - 1);
-    } catch (e) {
-      bubble.textContent = '❌ 网络错误: ' + (e && e.message ? e.message : e);
-    } finally {
-      isSending = false; btn.textContent = '发送'; refresh(); input.focus();
-      refreshFooter();  // ✅ 每次发送后重新拉取最新余量（含全站）
-    }
-  }
-  btn.addEventListener('click', send);
-  input.addEventListener('keydown', function(ev){ if (ev.key === 'Enter') { ev.preventDefault(); send(); } });
-  input.addEventListener('input', refresh);
-  refreshFooter(); // 页面加载时拉取初始值
-})();
-</script>
-</body></html>`;
 
 class WebServerPlugin {
   constructor(bot) {
     this.bot = bot;
     this.name = 'web-client';
     this.priority = 999;
-    console.log('[Web-Plugin] 🔧 构造函数已执行，正在启动 Express...');
-    try {
-      this._startServer();
-    } catch (err) {
-      console.error('[Web-Plugin] ❌ _startServer 异常:', err.message);
-      console.error(err.stack);
-    }
+    try { this._startServer(); } catch (err) { console.error(err); }
   }
 
   _startServer() {
@@ -198,19 +52,18 @@ class WebServerPlugin {
     app.set('trust proxy', 1);
     app.use(express.json());
 
-    // 🆕 开放 dev-output 目录为静态文件服务，方便 QQ 端直接打开 MD 文件
-    const devOutputPath = path.join(__dirname, '../logs/dev-output');
-    app.use('/dev-files', express.static(devOutputPath));
+    // ✅ 静态文件托管配置（核心：恢复 /dev.html 访问）
+    const publicPath = path.join(__dirname, '../public');
+    app.use(express.static(publicPath));
+    app.use('/dev-files', express.static(path.join(__dirname, '../logs/dev-output')));
 
+    // 路由重定向与图标处理
+    app.get('/dev', (req, res) => res.redirect('/dev.html'));
+    app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+    // ================= 原有普通 Web 功能 =================
     app.get('/api/status', (req, res) => {
       res.json({ remaining: getRemaining(req.ip), globalRemaining: getGlobalRemaining() });
-    });
-
-    app.options('/api/chat', (req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      res.sendStatus(204);
     });
 
     app.post('/api/chat', dailyRateLimiter, async (req, res) => {
@@ -239,21 +92,11 @@ class WebServerPlugin {
         } else {
           const memories = await repo.search(userId, String(message), { topK: 3 }).catch(() => []);
           reply = await llm.chat(String(message), memories);
-          }
-          // 📊 埋点: 检索+延迟+token
-          metrics.searchTotal.inc({ status: 'ok' });
-          metrics.latency('main', 'ok', (Date.now() - reqStart) / 1000);
-          metrics.token('main', 'input', Math.ceil(String(message).length / 2));
-          metrics.token('main', 'output', Math.ceil((reply ? String(reply).length : 0) / 2));
-          if (false) {
         }
-        if (!reply) {
-          write('（没有插件或模型响应）');
-        } else {
-          for (const ch of String(reply).split('')) {
-            write(ch);
-            await new Promise(r => setTimeout(r, 20));
-          }
+        metrics.searchTotal.inc({ status: 'ok' });
+        metrics.latency('main', 'ok', (Date.now() - reqStart) / 1000);
+        if (!reply) { write('（没有插件或模型响应）'); } else {
+          for (const ch of String(reply).split('')) { write(ch); await new Promise(r => setTimeout(r, 20)); }
         }
         if (pluginName) res.write(`data: ${JSON.stringify({ meta: 'plugin:' + pluginName })}\n\n`);
         res.write('data: [DONE]\n\n');
@@ -267,19 +110,119 @@ class WebServerPlugin {
 
     app.get('/', (req, res) => {
       res.setHeader('Cache-Control', 'no-store');
-      res.send(buildHTML(getRemaining(req.ip)));
+      res.send(`<!DOCTYPE html><html><body><h2>MaidBot Web 运行中</h2><p>请访问 <a href="/dev.html">/dev.html</a> 进入控制台</p></body></html>`);
+    });
+
+    // ================= 🆕 开发者 API =================
+    app.get('/api/dev/projects', (req, res) => {
+      try {
+        const projects = dm._raw.prepare(`
+          SELECT project_name, group_name, is_active, status, updated_at, length(last_code) as code_len 
+          FROM dev_sessions WHERE user_id = ? ORDER BY updated_at DESC
+        `).all(DEV_USER_ID);
+        res.json({ success: true, projects });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    app.delete('/api/dev/projects/:group/:project', (req, res) => {
+      try {
+        dm.deleteProject(DEV_USER_ID, req.params.group, req.params.project);
+        res.json({ success: true });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    app.delete('/api/dev/groups/:group', (req, res) => {
+      try {
+        dm.deleteGroup(DEV_USER_ID, req.params.group);
+        res.json({ success: true });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    app.post('/api/dev/projects/move', (req, res) => {
+      const { oldGroup, project, newGroup } = req.body;
+      try {
+        dm.moveProjectToGroup(DEV_USER_ID, oldGroup, project, newGroup);
+        res.json({ success: true });
+      } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+    });
+
+    app.post('/api/dev/chat', async (req, res) => {
+      const { query } = req.body;
+      if (!query) return res.status(400).json({ success: false, error: '缺少 query' });
+
+      try {
+        let finalQuery = query.replace(/^\/dev\s*/, '');
+
+        // 🆕 强行拦截 note 指令，静默沉淀
+        if (finalQuery.startsWith('note ')) {
+          const noteContent = finalQuery.slice(5).trim();
+          const active = dm.getActiveSession(DEV_USER_ID);
+          if (!active) return res.json({ success: false, error: '请先锁定一个项目组' });
+          
+          dm.writeEvent({
+            source: 'manual_note',
+            groupName: active.group_name,
+            projectName: active.project_name,
+            taskType: 'note',
+            rawInput: noteContent,
+            rawOutput: '手动沉淀的笔记，等待自动蒸馏。',
+            outcome: 'success'
+          });
+          return res.json({ success: true, reply: `✅ 笔记已静默写入 L0 原始库。\n系统将在 30 分钟内自动将其蒸馏为 L1 经验。`, provider: 'system', reviewer: 'none', latency: 0 });
+        }
+
+        // 🆕 强行拦截 status 指令
+        if (finalQuery === 'status') {
+          const active = dm.getActiveSession(DEV_USER_ID);
+          if (!active) return res.json({ success: false, error: '请先锁定项目组' });
+          const stats = dm.stats();
+          const reply = `📊 **当前系统状态**\n\n- 当前锁定: [${active.group_name}] ${active.project_name}\n- 黑板代码量: ${active.last_code ? active.last_code.length : 0} 字符\n- 全局 L1 经验库: ${stats.experience} 条\n- 累计蒸馏次数: ${stats.distilled} 次`;
+          return res.json({ success: true, reply, provider: 'system', reviewer: 'none', latency: 0 });
+        }
+
+        if (finalQuery.startsWith('use ')) {
+          const targetProject = finalQuery.slice(4).trim();
+          dm.switchProjectWorkspace(DEV_USER_ID, targetProject);
+          return res.json({ success: true, reply: `✅ 已锁定项目空间: [${targetProject}]`, provider: 'system', reviewer: 'none', latency: 0 });
+        }
+        
+        if (finalQuery === 'done') {
+          const active = dm.getActiveSession(DEV_USER_ID);
+          if (active) {
+            dm.markProjectDone(DEV_USER_ID, active.project_name);
+            return res.json({ success: true, reply: `✅ 项目 [${active.project_name}] 已归档，黑板已清空，经验已送入蒸馏队列。`, provider: 'system', reviewer: 'none', latency: 0 });
+          }
+          return res.json({ success: true, reply: `当前没有活跃项目。`, provider: 'system', reviewer: 'none', latency: 0 });
+        }
+
+        const active = dm.getActiveSession(DEV_USER_ID);
+        if (!active) return res.json({ success: false, error: '请先在左侧选择或创建项目组' });
+
+        const projectName = active.project_name;
+        const groupName = active.group_name;
+        const isIteration = /报错|修改|不对|错误|换个|改成|优化|重写|继续/i.test(finalQuery);
+        const contextCode = isIteration ? (active.last_code || '') : '';
+
+        const result = await devChat(finalQuery, { userId: DEV_USER_ID, groupName, projectName, isIteration, contextCode });
+        dm.updateSessionCode(DEV_USER_ID, projectName, result.reply);
+
+        res.json({
+          success: true,
+          reply: result.reply,
+          review: result.review,
+          provider: result.provider,
+          reviewer: result.reviewer,
+          latency: result.latency
+        });
+      } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+      }
     });
 
     const PORT = process.env.WEB_PORT || 3001;
-    app.listen(PORT, () => {
-      logger.info(`[Web-Plugin] 🌐 Web Client 已启动: http://localhost:${PORT}`);
-      logger.info(`[Web-Plugin] 🛡️ 限流: 个人 ${DAILY_LIMIT} 次/天, 全站 ${GLOBAL_DAILY_LIMIT} 次/天`);
-    });
+    app.listen(PORT, () => logger.info(`[Web-Plugin] Web Console: http://localhost:${PORT}/dev.html`));
   }
-
-  async handleMessage(msgData, bot) {
-    return null;
-  }
+  async handleMessage(msgData, bot) { return null; }
 }
 
 module.exports = WebServerPlugin;
