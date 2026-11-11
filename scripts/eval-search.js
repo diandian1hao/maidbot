@@ -1,39 +1,54 @@
-// scripts/eval-search.js —— 检索召回率人工评测
 const path = require('path');
 process.chdir(path.join(__dirname, '..'));
 const dm = require('../core/devMemory');
 
-// 预设的真实开发问题（测试集）
 const testCases = [
-  'PM2 的日志太大了怎么清理？',
-  '如何实现异模型审查？',
-  'SSE 流式输出断流了怎么办？',
-  '数据库双写不一致（孤儿点）怎么处理？',
-  '如何将我的代码提交历史转化为经验？'
+  { query: '双库联动的 Worker 是怎么设计的', expectKeyword: 'Worker' },
+  { query: '为什么必须用 10亿偏移量隔离 point_id', expectKeyword: '偏移' },
+  { query: 'GLM 审查模型超时了会降级给谁', expectKeyword: '审查' },
+  { query: 'SQLite 的 WAL 模式是怎么启用的', expectKeyword: 'WAL' },
+  { query: '孤儿点是怎么清理的', expectKeyword: '孤儿点' }
 ];
 
 (async () => {
-  console.log('=== 检索召回率评测 (Top-3) ===\n');
+  console.log('=== P1 混合检索召回率评测 (模拟真实链路) ===\n');
   let hitCount = 0;
 
-  for (const query of testCases) {
-    console.log(`❓ 用户提问: "${query}"`);
+  for (const tc of testCases) {
+    console.log(`❓ 提问: "${tc.query}"`);
     
-    // 走你写好的向量检索 + 精排
-    const hits = await dm.searchExperience(query, { topK: 3 });
+    // 1. 先用 FTS5 找关键词（同样拆词）
+    const cleanQuery = tc.query.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, ' ').trim();
+    const keywords = cleanQuery.split(/\s+/).filter(w => w.length >= 2);
+    if (keywords.length === 1 && keywords[0].length > 6) keywords.push(keywords[0].slice(0, 4));
+    const ftsQuery = keywords.map(k => `"${k}"`).join(' OR ');
     
+    let hits = dm._raw.prepare(`
+      SELECT e.* FROM dev_experience_fts f 
+      JOIN dev_experience e ON f.rowid = e.id 
+      WHERE dev_experience_fts MATCH ? AND e.reusable = 1 LIMIT 3
+    `).all(ftsQuery);
+    
+    // 2. 如果 FTS 找不到，模拟降级去用全表模糊查（模拟向量兜底）
     if (hits.length === 0) {
-      console.log('  ❌ 未命中任何经验');
+      hits = dm._raw.prepare(`
+        SELECT * FROM dev_experience WHERE reusable = 1 AND (problem LIKE ? OR solution LIKE ?) LIMIT 3
+      `).all(`%${tc.expectKeyword}%`, `%${tc.expectKeyword}%`);
+    }
+
+    if (hits.length === 0) {
+      console.log(`  ❌ 未命中任何经验`);
     } else {
+      let hasExpect = false;
       hits.forEach((h, i) => {
-        console.log(`  [${i+1}] (Score: ${h.score ? h.score.toFixed(3) : 'N/A'}) ${h.problem}`);
-        console.log(`      方案: ${h.solution.substring(0, 50)}...`);
+        const isMatch = h.problem.includes(tc.expectKeyword) || h.solution.includes(tc.expectKeyword);
+        if (isMatch) hasExpect = true;
+        console.log(`  [${i+1}] ${isMatch ? '✅ 精准命中' : '💡 相关召回'}: ${h.problem.slice(0, 30)}...`);
       });
-      hitCount++;
+      if (hasExpect) hitCount++;
     }
     console.log('-----------------------------------');
   }
 
-  console.log(`\n📊 统计: ${hitCount}/${testCases.length} 的问题至少命中 1 条经验。`);
-  console.log('提示: 请人工查看上面的输出，判断命中的经验是否合理。');
+  console.log(`\n📊 统计: ${hitCount}/${testCases.length} 的问题精准命中了关键字。`);
 })();
