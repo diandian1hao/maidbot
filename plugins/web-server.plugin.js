@@ -51,6 +51,22 @@ class WebServerPlugin {
     const app = express();
     app.set('trust proxy', 1);
     app.use(express.json());
+    // ?? 访问门禁：只保护开发控制台与 /api/dev/*，公开聊天接口不受影响
+    const WEB_TOKEN = process.env.WEB_TOKEN || '';
+    const DEV_PATH_RE = /^\/(dev\.html|dev\.js|constitution-panel\.js|dev-files|api\/dev\/)/;
+    app.use((req, res, next) => {
+      if (!WEB_TOKEN) return next();
+      if (!DEV_PATH_RE.test(req.path)) return next();
+      const jar = (req.headers.cookie || '').split(';').map(v => v.trim());
+      const okCookie = jar.indexOf('dev_k=' + WEB_TOKEN) !== -1;
+      if (req.query.k === WEB_TOKEN && !okCookie) {
+        res.setHeader('Set-Cookie', 'dev_k=' + WEB_TOKEN + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000');
+      }
+      if (okCookie || req.query.k === WEB_TOKEN || req.headers['x-dev-token'] === WEB_TOKEN) return next();
+      if (req.path.indexOf('/api/') === 0) return res.status(401).json({ success: false, error: 'unauthorized' });
+      return res.status(401).type('html').send('<h2>需要 Token</h2><p>请访问 /dev.html?k=你的TOKEN 完成一次授权</p>');
+    });
+
 
     const publicPath = path.join(__dirname, '../public');
     app.use(express.static(publicPath));
@@ -107,6 +123,33 @@ class WebServerPlugin {
     app.get('/', (req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.send(`<!DOCTYPE html><html><body><h2>MaidBot Web 运行中</h2><p>请访问 <a href="/dev.html">/dev.html</a> 进入控制台</p></body></html>`);
+    });
+
+    
+    // 🆕 获取当前宪法
+    app.get('/api/dev/constitution', (req, res) => {
+      const active = dm.getActiveSession(DEV_USER_ID);
+      if (!active) return res.json({ success: false, error: '请先锁定项目' });
+      const ctx = dm.getProjectContext(DEV_USER_ID, active.group_name, active.project_name) || '';
+      res.json({ success: true, constitution: ctx, group: active.group_name, project: active.project_name });
+    });
+
+    // 🆕 修改宪法（带历史记录）
+    app.post('/api/dev/constitution', (req, res) => {
+      const { newConstitution, reason } = req.body;
+      if (!newConstitution) return res.json({ success: false, error: '内容不能为空' });
+      const active = dm.getActiveSession(DEV_USER_ID);
+      if (!active) return res.json({ success: false, error: '请先锁定项目' });
+      
+      try {
+        const oldCtx = dm.getProjectContext(DEV_USER_ID, active.group_name, active.project_name) || '';
+        dm.updateProjectContext(DEV_USER_ID, active.group_name, active.project_name, newConstitution);
+        dm._raw.prepare('INSERT INTO dev_constitution_history (user_id, group_name, project_name, old_text, new_text, change_reason) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(DEV_USER_ID, active.group_name, active.project_name, oldCtx, newConstitution, reason || '用户手动修改');
+        res.json({ success: true, message: '✅ 宪法修改成功，并已记录历史。' });
+      } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+      }
     });
 
     app.get('/api/dev/projects', (req, res) => {
@@ -215,6 +258,40 @@ class WebServerPlugin {
 
         const result = await devChat(finalQuery, { userId: DEV_USER_ID, groupName, projectName, isIteration, contextCode });
         dm.updateSessionCode(DEV_USER_ID, projectName, result.reply);
+
+        // 🆕 保存本次交互到状态快照
+        try {
+           const BT = String.fromCharCode(96);
+           const fence = BT + BT + BT;
+           const replyText = String(result.reply || '');
+           const NOISE = ['node.js', 'vue.js', 'react.js', 'next.js', 'express.js', 'd3.js', 'three.js', 'chart.js', 'jquery.js', 'angular.js', 'nest.js', 'nuxt.js', 'svelte.js', 'socket.io'];
+           const files = Array.from(new Set((replyText.match(/(?<![\w\-\/.])((?:[\w\-]+\/)*[\w\-]+\.(?:js|json|md|html|css|ts|sh|py))/g) || [])
+             .filter(function (f) { return NOISE.indexOf(f.toLowerCase()) === -1; }))).slice(0, 12);
+           const summary = replyText.split(fence).filter(function (v, i) { return i % 2 === 0; }).join(' ')
+             .split(BT).join('').replace(/[#*>\|_\-]+/g, ' ').replace(/\s+/g, ' ')
+             .replace(/\s([：:，,。；;])/g, '$1').trim().slice(0, 160);
+           const blocks = replyText.split(fence);
+           const codeLines = blocks.length > 1 ? blocks[1].split('\n').length - 1 : 0;
+           const diffLabel = codeLines > 0 ? ('产出代码块约 ' + codeLines + ' 行') : '本轮为说明或对话';
+           const snapStr = JSON.stringify({
+             current_task: finalQuery.slice(0, 120),
+             file_tree: files,
+             last_diff: diffLabel,
+             recent_summary: summary,
+             updated_at: Date.now()
+           });
+           dm._raw.prepare('INSERT OR REPLACE INTO dev_snapshot (user_id, group_name, project_name, snapshot_json, updated_at) VALUES (?, ?, ?, ?, ?)')
+             .run(DEV_USER_ID, groupName, projectName, snapStr, Date.now());
+        } catch(e) { logger.error('快照保存失败: ' + e.message); }
+
+        // 🆕 事件触发：本轮含代码块则立即蒸馏（限流在 distiller 内部）
+        try {
+          var _bt = String.fromCharCode(96);
+          if (String(result.reply || '').indexOf(_bt + _bt + _bt) !== -1) {
+            setTimeout(function () { require('../core/devDistiller').triggerAfterRound({ userId: DEV_USER_ID, groupName: groupName, projectName: projectName }).catch(function (e2) { logger.warn('[Distill] 触发失败: ' + e2.message); }); }, 3000);
+          }
+        } catch (e3) { logger.warn('[Distill] 触发异常: ' + e3.message); }
+
 
         res.json({
           success: true,

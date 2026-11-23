@@ -4,7 +4,7 @@ let chatHistory = [];
 let currentProjectsData = null; 
 let loadToken = 0;
 
-marked.setOptions({ breaks: true });
+marked.setOptions({ breaks: true, gfm: true });
 
 function loadHistory() {
   const saved = localStorage.getItem(`maidbot_history_${activeProject ? activeProject.project_name : 'default'}`);
@@ -51,7 +51,13 @@ function renderChatBox() {
   
   if (typeof hljs !== 'undefined') {
     document.querySelectorAll('.msg.ai pre code').forEach((el) => {
-      hljs.highlightElement(el);
+      // 🆕 性能保护：如果代码超过 150 行，不做高亮，防止浏览器卡死
+      if (el.innerText.split('\n').length > 150) {
+        el.style.color = '#a78bfa';
+        el.innerText = '⚠️ 代码过长（超过 150 行），已自动跳过语法高亮以保持页面流畅。\n\n' + el.innerText;
+      } else {
+        try { hljs.highlightElement(el); } catch(e) { console.warn('高亮失败:', e); }
+      }
     });
   }
 

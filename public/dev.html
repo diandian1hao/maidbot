@@ -95,6 +95,63 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 
 .copy-btn { position: absolute; top: 6px; right: 6px; background: #4b5563; color: white; border: none; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; opacity: 0; transition: 0.2s;}
 pre:hover .copy-btn { opacity: 1; }
+
+/* ==========================================
+   🆕 终极防御：长代码与长文本防溢出补丁
+   ========================================== */
+.chat-area {
+  min-width: 0 !important;
+}
+.chat-box {
+  min-width: 0 !important;
+}
+.msg {
+  max-width: 100% !important;
+}
+.msg.ai .msg-content {
+  max-width: 100% !important;
+  overflow-wrap: break-word !important;
+  word-break: break-word !important;
+}
+.msg.ai .msg-content pre {
+  overflow-x: auto !important;
+  max-width: 100% !important;
+  white-space: pre !important; /* 代码本身不乱换行，但依靠 scroll */
+}
+.msg.ai .msg-content pre code {
+  display: block !important;
+  max-width: 100% !important;
+}
+.msg.user .msg-content {
+  overflow-wrap: break-word !important;
+  word-break: break-all !important;
+}
+
+
+/* 🆕 终极防布局崩塌补丁 */
+.msg.ai .msg-content pre {
+  max-height: 500px !important; /* 限制代码块最大高度 */
+  overflow-y: auto !important;  /* 超出部分纵向滚动 */
+  overflow-x: auto !important;  /* 横向滚动 */
+  background: #1e1e1e !important;
+}
+.msg.ai .msg-content table {
+  display: block !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  border-collapse: collapse;
+}
+.msg.ai .msg-content img {
+  max-width: 100% !important;
+  height: auto;
+}
+.msg.ai .msg-content blockquote {
+  border-left: 4px solid #10b981;
+  padding-left: 10px;
+  color: #94a3b8;
+  margin: 8px 0;
+}
+
 </style>
 </head>
 <body>
@@ -168,5 +225,6 @@ pre:hover .copy-btn { opacity: 1; }
   </div>
 </div>
 <script src="/dev.js"></script>
+<script src="/constitution-panel.js"></script>
 </body>
 </html>

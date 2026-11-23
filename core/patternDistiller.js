@@ -4,18 +4,19 @@ const modelProvider = require('./modelProvider');
 const logger = require('../utils/logger');
 
 async function checkAndDistillL2() {
-  // 找出使用次数 >= 3 且还没蒸馏过 L2 的经验（这里简单用 used_count==3 作为触发点，避免重复执行）
-  const candidates = dm._raw.prepare(
-    'SELECT * FROM dev_experience WHERE used_count = 3 AND reusable = 1'
-  ).all();
+  try {
+    // 找出使用次数 >= 3 且还没蒸馏过 L2 的经验
+    const candidates = dm._raw.prepare(
+      'SELECT * FROM dev_experience WHERE used_count = 3 AND reusable = 1'
+    ).all();
 
-  if (candidates.length === 0) return;
+    if (candidates.length === 0) return;
 
-  logger.info(`[PatternDistiller] 发现 ${candidates.length} 条高频经验，开始提取通用规律...`);
+    logger.info(`[PatternDistiller] 发现 ${candidates.length} 条高频经验，开始提取通用规律...`);
 
-  for (const c of candidates) {
-    try {
-      const prompt = `以下是一条高频使用的开发经验，请提取出更通用的架构设计规律或编程原则。
+    for (const c of candidates) {
+      try {
+        const prompt = `以下是一条高频使用的开发经验，请提取出更通用的架构设计规律或编程原则。
 【具体经验】
 问题: ${c.problem}
 方案: ${c.solution}
@@ -24,24 +25,44 @@ async function checkAndDistillL2() {
 输出简洁的 JSON：
 {"pattern": "提取出的通用规律(不超过100字)", "confidence": 0.8}`;
 
-      const res = await modelProvider.route('distill', prompt, { temperature: 0.1 });
-      const text = res.content;
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      if (start !== -1 && end !== -1) {
-        const parsed = JSON.parse(text.slice(start, end + 1));
+        const res = await modelProvider.route('distill', prompt, { temperature: 0.1 });
+        const text = res.content;
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
         
-        // 写入 L2 表
-        dm._raw.prepare(
-          'INSERT INTO dev_patterns (ts, pattern, evidence_ids, confidence) VALUES (?, ?, ?, ?)'
-        ).run(Date.now(), parsed.pattern, JSON.stringify([c.id]), parsed.confidence || 0.8);
+        if (start !== -1 && end !== -1) {
+          const parsed = JSON.parse(text.slice(start, end + 1));
+          
+          try {
+            // 🆕 终极容错：如果表不存在，让它在这里报错，被下面的 catch 捕获，不阻塞主流程
+            dm._raw.prepare(
+              'INSERT INTO dev_patterns (ts, pattern, evidence_ids, confidence) VALUES (?, ?, ?, ?)'
+            ).run(Date.now(), parsed.pattern, JSON.stringify([c.id]), parsed.confidence || 0.8);
+            logger.info(`[PatternDistiller] 🌟 L1 id=${c.id} 成功升华为 L2: ${parsed.pattern}`);
+          } catch (dbErr) {
+             logger.warn(`[PatternDistiller] ⚠️ 写入 L2 表失败 (可能表不存在): ${dbErr.message}`);
+          }
 
-        logger.info(`[PatternDistiller] 🌟 L1 id=${c.id} 成功升华为 L2: ${parsed.pattern}`);
+        } else {
+          throw new Error('模型未返回合法的 JSON 格式');
+        }
+      } catch (e) {
+        logger.error(`[PatternDistiller] 处理 L1 id=${c.id} 失败: ${e.message}`);
       }
-    } catch (e) {
-      logger.error(`[PatternDistiller] 处理 L1 id=${c.id} 失败: ${e.message}`);
+      
+      // 🆕 核心逻辑：无论如何，处理完一条，就把 used_count 改成 -1。
+      // 彻底杜绝死循环，无论成功还是失败，这辈子只处理一次！
+      try {
+        dm._raw.prepare('UPDATE dev_experience SET used_count = -1 WHERE id = ?').run(c.id);
+      } catch (updateErr) {
+        logger.error(`[PatternDistiller] 更新 used_count 失败: ${updateErr.message}`);
+      }
+      
+      // 强制延迟 1.5 秒，防止并发太高触发 429
+      await new Promise(r => setTimeout(r, 1500));
     }
-    await new Promise(r => setTimeout(r, 2000));
+  } catch (err) {
+    logger.error(`[PatternDistiller] 全局异常: ${err.message}`);
   }
 }
 

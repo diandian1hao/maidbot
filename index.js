@@ -311,6 +311,8 @@ async function start() {
 
     // 🆕 启动双库联动 worker
     worker.start();
+    // 🆕 启动外部开发终端 API 网关
+    require('./core/devApiServer').startDevApi();
 
     // 🆕 首次上报指标
     repo.reportMetrics();

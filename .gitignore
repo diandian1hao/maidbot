@@ -19,3 +19,10 @@ verify_p1.js
 test-vision.js
 npm-debug.log*
 .DS_Store
+dev_knowledge.db*
+*.corrupted
+*.dead
+*.bak_*
+dev_knowledge.db.*
+*.corrupted
+*.dead
