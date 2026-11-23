@@ -112,12 +112,12 @@ node -e "const db=require('better-sqlite3')('dev_knowledge.db');console.log(db.p
 
 ## 九、安全加固（2026-11-23 追加）
 
-- 3001 增加 Token 门禁：仅保护 `dev.html` / `dev.js` / `constitution-panel.js` / `dev-files` / `api/dev/*`，公开聊天接口 `/` 与 `/api/chat` 保持开放
-- Token 由环境变量 `WEB_TOKEN` 注入；浏览器首次带 `?k=` 访问后写入 HttpOnly Cookie（一年有效），脚本调用使用 `x-dev-token` 请求头
-- 8000（矢量库）与 9090（Prometheus）防火墙来源改为 `127.0.0.1`，不再对公网暴露
-- 3000（Grafana）依赖自身登录体系：强密码 + 关闭匿名访问与注册
-- 已记录的新风险：`WEB_TOKEN` 未配置时中间件放行（fail-open），依赖 `pm2 save` 持久化；后续应改为 fail-closed
-- 已记录的新风险：`trust proxy=1` + `req.ip` 可被 `X-Forwarded-For` 伪造，绕过每日限流
+- 控制台入口增加应用层鉴权：仅保护控制台页面、静态资源与 `/api/dev/*`，公开聊天接口保持开放
+- 凭据由环境变量注入；浏览器首次授权后写入 HttpOnly Cookie，脚本调用使用请求头传递
+- 后端服务（矢量库、监控采集）监听地址收敛到本机，不再对外暴露
+- 可视化面板依赖自身登录体系：强密码 + 关闭匿名访问与注册
+- 新风险：凭据未配置时中间件放行（fail-open），依赖进程管理器的持久化机制
+- 新风险：`trust proxy` 与客户端 IP 取值组合，可被伪造请求头绕过限流
 
 ## 十、Phase 2：状态快照与经验审计（2026-11-23）
 
@@ -176,3 +176,7 @@ node -e "const db=require('better-sqlite3')('dev_knowledge.db');console.log(db.p
 - `kind` 字段（`code_experience` / `methodology` / `noise`）尚未引入，老数据中确有架构讨论属 L2 原料，留待 Phase 3
 - 2 条 `is_permanent=1` 的未审记录未纳入本次处置，需单独确认
 - 审核器依赖 `glm-4-flash`，若驳回率异常偏高或偏低，需换模型复测
+
+---
+
+*本日志所有结论均可用第三节命令复现。*
